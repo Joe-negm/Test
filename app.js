@@ -23,6 +23,7 @@ let globalStudentsCache = [];
 let activeConversationId = null;
 let unreadPollTimer = null;
 let certCache = [];
+let certificatesRefreshTimer = null;
 
 // ----------------------------------------------------------------------------
 function getSupabaseConfig() {
@@ -106,6 +107,10 @@ async function checkSessionAndBoot() {
 function showAuthView() {
   currentUser = null; currentProfile = null;
   if (unreadPollTimer) clearInterval(unreadPollTimer);
+  if (typeof certificatesRefreshTimer !== "undefined" && certificatesRefreshTimer) {
+    clearInterval(certificatesRefreshTimer);
+    certificatesRefreshTimer = null;
+  }
   document.getElementById("auth-section").classList.remove("hidden");
   document.getElementById("app-section").classList.add("hidden");
 }
@@ -137,11 +142,12 @@ async function bootRoleWorkspace() {
       { id: "global-dashboard", label: "🌍 All Students Dashboard" },
     ];
   } else if (currentProfile.role === "teacher") {
+    // Certificates tab intentionally removed — certificates are only visible
+    // to the platform owner and to the students who actually earned them.
     tabs = [
       { id: "teacher-class", label: "🏫 Class Dashboard" },
       { id: "teacher-topics", label: "📚 Topics Overview" },
       { id: "teacher-hints", label: "🤖 AI Hints" },
-      { id: "certificates", label: "🏆 Certificates" },
       { id: "global-dashboard", label: "🌍 All Students Dashboard" },
     ];
   } else {
@@ -190,6 +196,10 @@ async function switchWorkspaceView(viewId) {
   if (viewId !== "challenges" && typeof summaryPollTimer !== "undefined" && summaryPollTimer) {
     clearInterval(summaryPollTimer);
     summaryPollTimer = null;
+  }
+  if (viewId !== "certificates" && typeof certificatesRefreshTimer !== "undefined" && certificatesRefreshTimer) {
+    clearInterval(certificatesRefreshTimer);
+    certificatesRefreshTimer = null;
   }
 }
 
@@ -961,10 +971,15 @@ async function fetchContacts() {
     ]);
     return [...(studRes.data || []), ...(ownerRes.data || [])];
   }
-  const ids = [currentProfile.teacher_id].filter(Boolean);
-  if (!ids.length) return [];
-  const { data } = await supabaseClient.from("profiles").select("*").in("id", ids);
-  return data || [];
+  // Student: their teacher + all platform owners (so students can DM the owner directly)
+  const teacherIds = [currentProfile.teacher_id].filter(Boolean);
+  const [teacherRes, ownerRes] = await Promise.all([
+    teacherIds.length
+      ? supabaseClient.from("profiles").select("*").in("id", teacherIds)
+      : Promise.resolve({ data: [] }),
+    supabaseClient.from("profiles").select("*").eq("role", "owner"),
+  ]);
+  return [...(teacherRes.data || []), ...(ownerRes.data || [])];
 }
 async function openInbox() {
   document.getElementById("inbox-modal").classList.remove("hidden");
@@ -1048,28 +1063,83 @@ async function handleInboxSend(e) {
 
 // ----------------------------------------------------------------------------
 // Weekly certificates
+//
+// Visibility rules:
+//   • owner   → sees every certificate from every student / school
+//   • student → sees only certificates where student_id === their own profile id
+//   • teacher → no certificates tab at all (removed from nav in bootRoleWorkspace)
+//
+// "Up to date with the data":
+//   • every time the tab is opened we fetch fresh rows from the DB
+//   • while the owner stays on the tab, we silently re-fetch every 60 s so newly
+//     generated certificates appear without a manual refresh
 // ----------------------------------------------------------------------------
 async function loadCertificatesView() {
+  // Kick off owner-side auto-refresh (cleared whenever we leave the tab).
+  if (typeof certificatesRefreshTimer !== "undefined" && certificatesRefreshTimer) {
+    clearInterval(certificatesRefreshTimer);
+    certificatesRefreshTimer = null;
+  }
+  if (currentProfile.role === "owner") {
+    certificatesRefreshTimer = setInterval(async () => {
+      const view = document.getElementById("view-certificates");
+      if (!view || view.classList.contains("hidden")) {
+        clearInterval(certificatesRefreshTimer);
+        certificatesRefreshTimer = null;
+        return;
+      }
+      await loadCertificatesViewData();
+    }, 60000);
+  }
+  await loadCertificatesViewData();
+}
+
+async function loadCertificatesViewData() {
   const container = document.getElementById("certificates-list");
+  if (!container) return;
   container.innerHTML = `<p class="muted">Loading…</p>`;
 
-  const { data, error } = await supabaseClient
+  // Scope the subtitle to the viewer's role so nobody is misled about what they see.
+  const headerP = document.querySelector("#view-certificates .panel-header p");
+  if (headerP) {
+    headerP.textContent = currentProfile.role === "owner"
+      ? "Top 3 students by questions solved each week. Auto-generated every Thursday at 3:00 PM (Egypt time)."
+      : "Your weekly achievement certificates. Only you and the platform owner can see these.";
+  }
+
+  let query = supabaseClient
     .from("weekly_certificates")
     .select("*")
     .order("week_start", { ascending: false })
     .order("rank", { ascending: true });
+
+  // Students only ever see certificates they actually earned.
+  if (currentProfile.role === "student") {
+    query = query.eq("student_id", currentProfile.id);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     container.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
     return;
   }
   if (!data || data.length === 0) {
-    container.innerHTML = `
-      <div class="cert-empty">
-        <div style="font-size:2.5rem;">🏆</div>
-        <p>No certificates yet.</p>
-        <p class="muted">The first batch will be generated on the next Thursday at 3:00 PM.</p>
-      </div>`;
+    if (currentProfile.role === "student") {
+      container.innerHTML = `
+        <div class="cert-empty">
+          <div style="font-size:2.5rem;">🏆</div>
+          <p>No certificates yet.</p>
+          <p class="muted">Keep solving — the top 3 students earn a certificate every Thursday at 3:00 PM.</p>
+        </div>`;
+    } else {
+      container.innerHTML = `
+        <div class="cert-empty">
+          <div style="font-size:2.5rem;">🏆</div>
+          <p>No certificates yet.</p>
+          <p class="muted">The first batch will be generated on the next Thursday at 3:00 PM.</p>
+        </div>`;
+    }
     certCache = [];
     return;
   }
@@ -1100,13 +1170,16 @@ async function loadCertificatesView() {
         </div>`;
     }).join("");
 
+    // "Download all 3" only makes sense for the owner (a student has 1 cert per week).
+    const showBulkDownload = currentProfile.role === "owner";
     return `
       <div class="cert-week-block">
         <div class="cert-week-title">
           <span>📅 Week of ${new Date(weekStart).toLocaleDateString()} – ${new Date(weekEnd).toLocaleDateString()}</span>
-          <button class="btn btn-outline btn-sm" onclick="downloadAllWeekByDate('${weekStart}')">
-            Download all 3
-          </button>
+          ${showBulkDownload ? `
+            <button class="btn btn-outline btn-sm" onclick="downloadAllWeekByDate('${weekStart}')">
+              Download all 3
+            </button>` : ""}
         </div>
         <div class="cert-grid">${cardsHtml}</div>
       </div>`;
