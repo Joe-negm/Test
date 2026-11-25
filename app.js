@@ -1,7 +1,8 @@
 // ============================================================================
 // Cambridge Math Arena — full frontend
-// Features: AI hints (server-side), DMs, owner hint log, teacher topic overview,
-// weekly certificates (auto + manual), teacher dashboard exports (Excel/PDF)
+// Features: AI hints, DMs, owner hint log, teacher overview,
+// weekly certificates, exports, 1v1 challenges (all-platform, presence),
+// profile avatars.
 // ============================================================================
 
 const DEFAULT_SUPABASE_URL = "https://yktszhisgtrzggorhzwo.supabase.co";
@@ -24,6 +25,10 @@ let activeConversationId = null;
 let unreadPollTimer = null;
 let certCache = [];
 let certificatesRefreshTimer = null;
+
+// Avatar state
+let pendingAvatarFile = null;
+let pendingAvatarRemoved = false;
 
 // ----------------------------------------------------------------------------
 function getSupabaseConfig() {
@@ -87,6 +92,96 @@ function fmtDate(iso) {
 }
 
 // ----------------------------------------------------------------------------
+// Avatar rendering
+// ----------------------------------------------------------------------------
+function renderAvatarHtml(profile, size = 40, options = {}) {
+  const { showOnlineDot = false, isOnline = false } = options;
+  const name = profile?.full_name || "?";
+  const initials = name.split(" ").map(p => p[0]).filter(Boolean).join("").slice(0, 2).toUpperCase() || "?";
+  const url = profile?.avatar_url;
+  const inner = url
+    ? `<img src="${escapeHtml(url)}" alt="" loading="lazy" />`
+    : `<span class="avatar-initials">${escapeHtml(initials)}</span>`;
+  const dot = showOnlineDot
+    ? (isOnline
+        ? `<span class="online-dot" title="Online"></span>`
+        : `<span class="offline-dot" title="Offline"></span>`)
+    : "";
+  const fs = Math.max(11, Math.round(size * 0.4));
+  return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${fs}px;">${inner}${dot}</span>`;
+}
+
+function refreshHeaderAvatar() {
+  const el = document.getElementById("header-avatar");
+  if (el) el.innerHTML = renderAvatarHtml(currentProfile, 34);
+}
+
+function openAvatarModal() {
+  pendingAvatarFile = null;
+  pendingAvatarRemoved = false;
+  const preview = document.getElementById("avatar-preview-large");
+  if (preview) preview.innerHTML = renderAvatarHtml(currentProfile, 120);
+  const fileInput = document.getElementById("avatar-file-input");
+  if (fileInput) fileInput.value = "";
+  document.getElementById("avatar-modal").classList.remove("hidden");
+}
+window.openAvatarModal = openAvatarModal;
+
+function closeAvatarModal() {
+  pendingAvatarFile = null;
+  pendingAvatarRemoved = false;
+  document.getElementById("avatar-modal").classList.add("hidden");
+}
+window.closeAvatarModal = closeAvatarModal;
+
+async function saveAvatar() {
+  const btn = document.getElementById("avatar-save-btn");
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+  try {
+    let newUrl = currentProfile.avatar_url || null;
+
+    if (pendingAvatarFile) {
+      const file = pendingAvatarFile;
+      if (file.size > 2 * 1024 * 1024) throw new Error("Image is over 2 MB — please pick a smaller one.");
+      if (!file.type.startsWith("image/")) throw new Error("Please choose an image file.");
+      const ext = (file.name.split(".").pop() || "png").toLowerCase();
+      const path = `${currentProfile.id}/avatar-${Date.now()}.${ext}`;
+      const { error: upErr } = await supabaseClient.storage
+        .from("avatars").upload(path, file, { cacheControl: "3600", upsert: true });
+      if (upErr) throw upErr;
+      const { data: urlData } = supabaseClient.storage.from("avatars").getPublicUrl(path);
+      newUrl = urlData.publicUrl;
+    } else if (pendingAvatarRemoved) {
+      newUrl = null;
+    }
+
+    const { error: updateErr } = await supabaseClient
+      .from("profiles").update({ avatar_url: newUrl }).eq("id", currentProfile.id);
+    if (updateErr) throw updateErr;
+
+    currentProfile.avatar_url = newUrl;
+    refreshHeaderAvatar();
+    showToast(pendingAvatarRemoved ? "Avatar removed." : "Avatar updated!", "success");
+    closeAvatarModal();
+
+    // Refresh whatever view is currently open so avatars stay in sync.
+    const view = document.querySelector(".view-panel:not(.hidden)")?.id;
+    if (view === "view-challenges") renderClassmateList();
+    if (view === "view-global-dashboard") { renderGlobalPodium(); renderGlobalLeaderboard(); }
+    if (view === "view-class-dashboard") loadStudentClassDashboard();
+    if (view === "view-teacher-class") loadTeacherClassView();
+    if (view === "view-certificates") loadCertificatesView();
+  } catch (err) {
+    showToast(err.message || "Avatar upload failed.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+// ----------------------------------------------------------------------------
 // Auth
 // ----------------------------------------------------------------------------
 async function checkSessionAndBoot() {
@@ -106,6 +201,7 @@ async function checkSessionAndBoot() {
 }
 function showAuthView() {
   currentUser = null; currentProfile = null;
+  stopPresenceTracking();
   if (unreadPollTimer) clearInterval(unreadPollTimer);
   if (typeof certificatesRefreshTimer !== "undefined" && certificatesRefreshTimer) {
     clearInterval(certificatesRefreshTimer);
@@ -124,6 +220,7 @@ async function bootRoleWorkspace() {
   document.getElementById("header-user-name").textContent = currentProfile.full_name;
   document.getElementById("header-school-badge").textContent =
     currentProfile.school_name || (currentProfile.role === "owner" ? "Platform Owner" : "");
+  refreshHeaderAvatar();
 
   const scorePill = document.getElementById("header-score-badge");
   if (currentProfile.role === "student") {
@@ -142,8 +239,6 @@ async function bootRoleWorkspace() {
       { id: "global-dashboard", label: "🌍 All Students Dashboard" },
     ];
   } else if (currentProfile.role === "teacher") {
-    // Certificates tab intentionally removed — certificates are only visible
-    // to the platform owner and to the students who actually earned them.
     tabs = [
       { id: "teacher-class", label: "🏫 Class Dashboard" },
       { id: "teacher-topics", label: "📚 Topics Overview" },
@@ -166,6 +261,10 @@ async function bootRoleWorkspace() {
     btn.addEventListener("click", () => switchWorkspaceView(btn.dataset.view)));
 
   await switchWorkspaceView(tabs[0].id);
+
+  // Start realtime presence so students can see who else is online.
+  if (currentProfile.role === "student") await startPresenceTracking();
+
   refreshUnreadBadge();
   if (unreadPollTimer) clearInterval(unreadPollTimer);
   unreadPollTimer = setInterval(refreshUnreadBadge, 30000);
@@ -353,6 +452,34 @@ function bindStaticEvents() {
   document.getElementById("close-challenge-room")?.addEventListener("click", closeChallengeRoom);
   document.querySelector("#challenge-room-modal .modal-backdrop")?.addEventListener("click", closeChallengeRoom);
 
+  // Avatar modal
+  document.getElementById("user-pill")?.addEventListener("click", (e) => {
+    if (e.target.closest("button")) return;
+    openAvatarModal();
+  });
+  document.getElementById("close-avatar-modal")?.addEventListener("click", closeAvatarModal);
+  document.querySelector("#avatar-modal .modal-backdrop")?.addEventListener("click", closeAvatarModal);
+  document.getElementById("avatar-choose-btn")?.addEventListener("click", () => {
+    document.getElementById("avatar-file-input").click();
+  });
+  document.getElementById("avatar-file-input")?.addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    pendingAvatarFile = file;
+    pendingAvatarRemoved = false;
+    const preview = document.getElementById("avatar-preview-large");
+    const url = URL.createObjectURL(file);
+    preview.innerHTML = `<span class="avatar" style="width:120px;height:120px;"><img src="${url}" alt="" /></span>`;
+  });
+  document.getElementById("avatar-remove-btn")?.addEventListener("click", () => {
+    pendingAvatarFile = null;
+    pendingAvatarRemoved = true;
+    document.getElementById("avatar-file-input").value = "";
+    const preview = document.getElementById("avatar-preview-large");
+    preview.innerHTML = renderAvatarHtml({ full_name: currentProfile?.full_name || "?" }, 120);
+  });
+  document.getElementById("avatar-save-btn")?.addEventListener("click", saveAvatar);
+
   renderAnswerGroups();
 }
 
@@ -536,7 +663,15 @@ async function loadOwnerTeachersView() {
       : `<span class="badge badge-danger">Expired</span>`;
     return `
       <tr>
-        <td><strong>${escapeHtml(t.full_name)}</strong><br/><small class="muted">${escapeHtml(t.email || "")}</small></td>
+        <td>
+          <div class="table-user">
+            ${renderAvatarHtml(t, 32)}
+            <div>
+              <strong>${escapeHtml(t.full_name)}</strong><br/>
+              <small class="muted">${escapeHtml(t.email || "")}</small>
+            </div>
+          </div>
+        </td>
         <td>${escapeHtml(t.school_name || "—")}</td>
         <td>${counts[t.id] || 0}</td>
         <td>${t.trial_ends_at ? new Date(t.trial_ends_at).toLocaleDateString() : "—"}</td>
@@ -579,6 +714,7 @@ async function loadHintsLog(role) {
 async function loadTeacherClassView() {
   const { data: fresh } = await supabaseClient.from("profiles").select("*").eq("id", currentProfile.id).single();
   if (fresh) currentProfile = fresh;
+  refreshHeaderAvatar();
   const school = document.getElementById("new-student-school");
   if (!school.value) school.value = currentProfile.school_name || "";
 
@@ -622,7 +758,12 @@ function renderTeacherClassTable() {
   tbody.innerHTML = filtered.map(s => `
     <tr>
       <td><strong>${formatRankMedal(s.rank)}</strong></td>
-      <td>${escapeHtml(s.full_name)}</td>
+      <td>
+        <div class="table-user">
+          ${renderAvatarHtml(s, 32)}
+          <span>${escapeHtml(s.full_name)}</span>
+        </div>
+      </td>
       <td><code>${escapeHtml(s.username || "")}</code></td>
       <td>${escapeHtml(s.school_name || "—")}</td>
       <td>${s.questions_solved}</td>
@@ -701,13 +842,15 @@ async function loadStudentPracticeView() {
     supabaseClient.from("questions").select("*").order("created_at", { ascending: true }),
     supabaseClient.from("student_attempts").select("question_id, is_correct")
       .eq("student_id", currentProfile.id).eq("is_correct", true),
-    supabaseClient.from("profiles").select("score, questions_solved").eq("id", currentProfile.id).single(),
+    supabaseClient.from("profiles").select("score, questions_solved, avatar_url").eq("id", currentProfile.id).single(),
     supabaseClient.rpc("get_question_answer_counts"),
   ]);
   if (profRes.data) {
     currentProfile.score = profRes.data.score;
     currentProfile.questions_solved = profRes.data.questions_solved;
+    if (profRes.data.avatar_url !== undefined) currentProfile.avatar_url = profRes.data.avatar_url;
   }
+  refreshHeaderAvatar();
   document.getElementById("student-my-score").textContent = currentProfile.score;
   document.getElementById("student-my-solved").textContent = currentProfile.questions_solved;
   document.getElementById("header-score-badge").textContent = `${currentProfile.score} pts`;
@@ -889,7 +1032,12 @@ async function loadStudentClassDashboard() {
     return `
       <tr class="${me ? "highlight-me" : ""}">
         <td><strong>${formatRankMedal(i + 1)}</strong></td>
-        <td>${escapeHtml(s.full_name)} ${me ? `<span class="badge badge-student">You</span>` : ""}</td>
+        <td>
+          <div class="table-user">
+            ${renderAvatarHtml(s, 32)}
+            <span>${escapeHtml(s.full_name)} ${me ? `<span class="badge badge-student">You</span>` : ""}</span>
+          </div>
+        </td>
         <td>${escapeHtml(s.school_name || "—")}</td>
         <td>${s.questions_solved}</td>
         <td><strong>${s.score} pts</strong></td>
@@ -915,6 +1063,7 @@ function renderGlobalPodium() {
   const medals = ["🥇", "🥈", "🥉"];
   p.innerHTML = top.map((s, i) => `
     <div class="podium-card rank-${i + 1}">
+      ${renderAvatarHtml(s, 72)}
       <div class="podium-medal">${medals[i]}</div>
       <h4>#${i + 1} ${escapeHtml(s.full_name)}</h4>
       <div class="muted">${escapeHtml(s.school_name || "")}</div>
@@ -935,7 +1084,12 @@ function renderGlobalLeaderboard() {
     return `
       <tr class="${me ? "highlight-me" : ""}">
         <td><strong>${formatRankMedal(s.rank)}</strong></td>
-        <td>${escapeHtml(s.full_name)} ${me ? `<span class="badge badge-student">You</span>` : ""}</td>
+        <td>
+          <div class="table-user">
+            ${renderAvatarHtml(s, 32)}
+            <span>${escapeHtml(s.full_name)} ${me ? `<span class="badge badge-student">You</span>` : ""}</span>
+          </div>
+        </td>
         <td>${escapeHtml(s.school_name || "—")}</td>
         <td>${s.questions_solved}</td>
         <td><strong>${s.score} pts</strong></td>
@@ -971,7 +1125,7 @@ async function fetchContacts() {
     ]);
     return [...(studRes.data || []), ...(ownerRes.data || [])];
   }
-  // Student: their teacher + all platform owners (so students can DM the owner directly)
+  // Student: their teacher + every platform owner.
   const teacherIds = [currentProfile.teacher_id].filter(Boolean);
   const [teacherRes, ownerRes] = await Promise.all([
     teacherIds.length
@@ -1013,7 +1167,9 @@ async function renderContacts() {
     return `
       <button class="inbox-contact ${isActive ? "active" : ""} ${unread > 0 && !isActive ? "unread" : ""}"
         onclick="selectContact('${u.id}')">
-        ${escapeHtml(u.full_name)}${roleIcon}${badge}
+        ${renderAvatarHtml(u, 28)}
+        <span style="flex:1;text-align:left;margin-left:8px;">${escapeHtml(u.full_name)}${roleIcon}</span>
+        ${badge}
       </button>`;
   }).join("");
 }
@@ -1062,20 +1218,9 @@ async function handleInboxSend(e) {
 }
 
 // ----------------------------------------------------------------------------
-// Weekly certificates
-//
-// Visibility rules:
-//   • owner   → sees every certificate from every student / school
-//   • student → sees only certificates where student_id === their own profile id
-//   • teacher → no certificates tab at all (removed from nav in bootRoleWorkspace)
-//
-// "Up to date with the data":
-//   • every time the tab is opened we fetch fresh rows from the DB
-//   • while the owner stays on the tab, we silently re-fetch every 60 s so newly
-//     generated certificates appear without a manual refresh
+// Weekly certificates — owner sees all, students see only their own
 // ----------------------------------------------------------------------------
 async function loadCertificatesView() {
-  // Kick off owner-side auto-refresh (cleared whenever we leave the tab).
   if (typeof certificatesRefreshTimer !== "undefined" && certificatesRefreshTimer) {
     clearInterval(certificatesRefreshTimer);
     certificatesRefreshTimer = null;
@@ -1099,7 +1244,6 @@ async function loadCertificatesViewData() {
   if (!container) return;
   container.innerHTML = `<p class="muted">Loading…</p>`;
 
-  // Scope the subtitle to the viewer's role so nobody is misled about what they see.
   const headerP = document.querySelector("#view-certificates .panel-header p");
   if (headerP) {
     headerP.textContent = currentProfile.role === "owner"
@@ -1113,7 +1257,6 @@ async function loadCertificatesViewData() {
     .order("week_start", { ascending: false })
     .order("rank", { ascending: true });
 
-  // Students only ever see certificates they actually earned.
   if (currentProfile.role === "student") {
     query = query.eq("student_id", currentProfile.id);
   }
@@ -1170,7 +1313,6 @@ async function loadCertificatesViewData() {
         </div>`;
     }).join("");
 
-    // "Download all 3" only makes sense for the owner (a student has 1 cert per week).
     const showBulkDownload = currentProfile.role === "owner";
     return `
       <div class="cert-week-block">
@@ -1196,28 +1338,24 @@ window.downloadCertificateById = function (id) {
 window.downloadAllWeekByDate = function (weekStart) {
   const certs = certCache.filter(c => c.week_start === weekStart);
   certs.forEach((c, i) => setTimeout(() => {
-    try { drawCertificatePDF(c); } catch (err) { /* silent per-file error */ }
+    try { drawCertificatePDF(c); } catch (err) { /* silent */ }
   }, i * 300));
 };
 
 function drawCertificatePDF(cert) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
-
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
 
-  // Outer navy border
   doc.setDrawColor(15, 41, 66);
   doc.setLineWidth(3);
   doc.rect(8, 8, W - 16, H - 16);
 
-  // Inner amber border
   doc.setDrawColor(217, 119, 6);
   doc.setLineWidth(0.8);
   doc.rect(11, 11, W - 22, H - 22);
 
-  // Header
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.setTextColor(100, 116, 139);
@@ -1227,7 +1365,6 @@ function drawCertificatePDF(cert) {
   doc.setTextColor(15, 41, 66);
   doc.text("Certificate of Achievement", W / 2, 48, { align: "center" });
 
-  // Body
   doc.setFont("helvetica", "normal");
   doc.setFontSize(12);
   doc.setTextColor(100, 116, 139);
@@ -1261,13 +1398,11 @@ function drawCertificatePDF(cert) {
     W / 2, 158, { align: "center" }
   );
 
-  // Big rank number on the left
   doc.setFont("helvetica", "bold");
   doc.setFontSize(48);
   doc.setTextColor(245, 158, 11);
   doc.text(`#${cert.rank}`, 32, 128);
 
-  // Signature line + label
   doc.setDrawColor(30, 41, 59);
   doc.setLineWidth(0.3);
   doc.line(W - 80, H - 32, W - 20, H - 32);
@@ -1364,17 +1499,79 @@ let activeChallengeId = null;
 let lastChallengeSignature = null;
 let hasAutoFocusedOwn = false;
 
+// Presence tracking
+let onlineUsersChannel = null;
+let onlineUsersMap = new Map();
+
+async function startPresenceTracking() {
+  if (!currentProfile) return;
+  if (onlineUsersChannel) {
+    try { await onlineUsersChannel.untrack(); } catch {}
+    try { await supabaseClient.removeChannel(onlineUsersChannel); } catch {}
+    onlineUsersChannel = null;
+  }
+  onlineUsersMap = new Map();
+
+  onlineUsersChannel = supabaseClient.channel("online-users", {
+    config: { presence: { key: currentProfile.id } },
+  });
+
+  onlineUsersChannel.on("presence", { event: "sync" }, () => {
+    const state = onlineUsersChannel.presenceState();
+    const next = new Map();
+    for (const key of Object.keys(state)) {
+      const metas = state[key];
+      if (metas && metas.length) {
+        const m = metas[0];
+        next.set(key, {
+          user_id: key,
+          full_name: m.full_name || "",
+          role: m.role || "",
+        });
+      }
+    }
+    onlineUsersMap = next;
+    const view = document.getElementById("view-challenges");
+    if (view && !view.classList.contains("hidden")) renderClassmateList();
+  });
+
+  onlineUsersChannel.subscribe(async (status) => {
+    if (status === "SUBSCRIBED") {
+      try {
+        await onlineUsersChannel.track({
+          user_id: currentProfile.id,
+          full_name: currentProfile.full_name,
+          role: currentProfile.role,
+          online_at: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.warn("Presence track failed:", err);
+      }
+    }
+  });
+}
+
+async function stopPresenceTracking() {
+  if (onlineUsersChannel) {
+    try { await onlineUsersChannel.untrack(); } catch {}
+    try { await supabaseClient.removeChannel(onlineUsersChannel); } catch {}
+    onlineUsersChannel = null;
+  }
+  onlineUsersMap = new Map();
+}
+
 async function loadChallengesView() {
   await refreshChallengeSummary();
 
-  const { data: classmates } = await supabaseClient
+  // Every student on the platform is challengeable — not just same-class.
+  const { data: allStudents } = await supabaseClient
     .from("profiles")
-    .select("id, full_name, username, school_name, score")
+    .select("id, full_name, username, school_name, score, teacher_id, avatar_url")
     .eq("role", "student")
-    .eq("teacher_id", currentProfile.teacher_id)
     .neq("id", currentProfile.id)
-    .order("full_name");
-  classmateCache = classmates || [];
+    .order("score", { ascending: false });
+
+  classmateCache = allStudents || [];
   renderClassmateList();
 
   if (summaryPollTimer) clearInterval(summaryPollTimer);
@@ -1387,24 +1584,42 @@ function renderClassmateList() {
   const query = (input.value || "").toLowerCase();
   const filtered = classmateCache.filter(c =>
     c.full_name.toLowerCase().includes(query) ||
-    (c.username || "").toLowerCase().includes(query)
+    (c.username || "").toLowerCase().includes(query) ||
+    (c.school_name || "").toLowerCase().includes(query)
   );
+
+  // Online first, then highest score.
+  filtered.sort((a, b) => {
+    const ao = onlineUsersMap.has(a.id) ? 1 : 0;
+    const bo = onlineUsersMap.has(b.id) ? 1 : 0;
+    if (ao !== bo) return bo - ao;
+    return (b.score || 0) - (a.score || 0);
+  });
+
   const container = document.getElementById("classmates-list");
   if (!container) return;
   if (!filtered.length) {
-    container.innerHTML = `<p class="muted">No classmates yet — your teacher needs to register students first.</p>`;
+    container.innerHTML = `<p class="muted">No students found.</p>`;
     return;
   }
+
   container.innerHTML = filtered.map(c => {
-    const initials = c.full_name.split(" ").map(p => p[0]).join("").slice(0, 2).toUpperCase();
+    const isOnline = onlineUsersMap.has(c.id);
+    const sameClass = c.teacher_id === currentProfile.teacher_id;
+    const tag = sameClass
+      ? `<span class="mini-tag">Your class</span>`
+      : (c.school_name ? `<span class="mini-tag muted-tag">${escapeHtml(c.school_name)}</span>` : "");
+
     return `
-      <div class="classmate-card">
-        <div class="classmate-avatar">${escapeHtml(initials)}</div>
+      <div class="classmate-card ${isOnline ? "online" : ""}">
+        ${renderAvatarHtml(c, 44, { showOnlineDot: true, isOnline })}
         <div class="classmate-info">
-          <strong>${escapeHtml(c.full_name)}</strong>
-          <small>${escapeHtml(c.username || "")} • ${c.score} pts</small>
+          <strong>${escapeHtml(c.full_name)}${isOnline ? ` <span class="online-label">• online</span>` : ""}</strong>
+          <small>${escapeHtml(c.username || "")} • ${c.score} pts ${tag}</small>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="startChallenge('${c.id}')">⚔️</button>
+        <button class="btn btn-primary btn-sm"
+                onclick="startChallenge('${c.id}')"
+                title="${isOnline ? "Challenge now" : "Send challenge (they'll see it when they log in)"}">⚔️</button>
       </div>`;
   }).join("");
 }
@@ -1420,7 +1635,6 @@ window.startChallenge = async function (opponentId) {
 async function refreshChallengeSummary() {
   const myId = currentProfile.id;
 
-  // Pending incoming
   const { data: incomingRows } = await supabaseClient
     .from("challenges")
     .select("id, challenger_id, created_at")
@@ -1428,7 +1642,6 @@ async function refreshChallengeSummary() {
     .eq("status", "pending")
     .order("created_at", { ascending: false });
 
-  // Active
   const { data: activeRows } = await supabaseClient
     .from("challenges")
     .select("id, challenger_id, opponent_id, round_started_at")
@@ -1436,7 +1649,6 @@ async function refreshChallengeSummary() {
     .eq("status", "active")
     .order("round_started_at", { ascending: false });
 
-  // History
   const { data: historyRows } = await supabaseClient
     .from("challenges")
     .select("id, status, challenger_id, opponent_id, challenger_points, opponent_points, completed_at, created_at")
@@ -1445,7 +1657,6 @@ async function refreshChallengeSummary() {
     .order("created_at", { ascending: false })
     .limit(50);
 
-  // Fetch profiles for display
   const allIds = new Set();
   (incomingRows || []).forEach(r => allIds.add(r.challenger_id));
   (activeRows || []).forEach(r => { allIds.add(r.challenger_id); allIds.add(r.opponent_id); });
@@ -1455,12 +1666,11 @@ async function refreshChallengeSummary() {
   if (allIds.size > 0) {
     const { data: profs } = await supabaseClient
       .from("profiles")
-      .select("id, full_name")
+      .select("id, full_name, avatar_url")
       .in("id", Array.from(allIds));
     (profs || []).forEach(p => profileMap.set(p.id, p));
   }
 
-  // Render incoming
   const incomingCard = document.getElementById("incoming-challenges-card");
   const incomingList = document.getElementById("incoming-challenges-list");
   if (incomingCard && incomingList) {
@@ -1468,7 +1678,10 @@ async function refreshChallengeSummary() {
       incomingCard.classList.remove("hidden");
       incomingList.innerHTML = incomingRows.map(c => `
         <div class="incoming-challenge-row">
-          <strong>${escapeHtml(profileMap.get(c.challenger_id)?.full_name || "Classmate")} challenges you!</strong>
+          <div class="table-user">
+            ${renderAvatarHtml(profileMap.get(c.challenger_id), 36)}
+            <strong>${escapeHtml(profileMap.get(c.challenger_id)?.full_name || "Classmate")} challenges you!</strong>
+          </div>
           <div style="display:flex;gap:6px;">
             <button class="btn btn-primary btn-sm" onclick="acceptChallenge('${c.id}')">✅ Accept</button>
             <button class="btn btn-outline btn-sm" onclick="declineChallenge('${c.id}')">❌ Decline</button>
@@ -1479,7 +1692,6 @@ async function refreshChallengeSummary() {
     }
   }
 
-  // Render active
   const activeCard = document.getElementById("active-challenges-card");
   const activeList = document.getElementById("active-challenges-list");
   if (activeCard && activeList) {
@@ -1489,7 +1701,10 @@ async function refreshChallengeSummary() {
         const opp = c.challenger_id === myId ? c.opponent_id : c.challenger_id;
         return `
           <div class="active-challenge-row">
-            <strong>⚔️ vs ${escapeHtml(profileMap.get(opp)?.full_name || "Classmate")} — in progress</strong>
+            <div class="table-user">
+              ${renderAvatarHtml(profileMap.get(opp), 36)}
+              <strong>⚔️ vs ${escapeHtml(profileMap.get(opp)?.full_name || "Classmate")} — in progress</strong>
+            </div>
             <button class="btn btn-primary btn-sm" onclick="openChallengeRoom('${c.id}')">🚪 Enter Room</button>
           </div>`;
       }).join("");
@@ -1498,7 +1713,6 @@ async function refreshChallengeSummary() {
     }
   }
 
-  // Render history
   const tbody = document.getElementById("challenge-history-tbody");
   if (tbody) {
     if (!historyRows || !historyRows.length) {
@@ -1518,7 +1732,12 @@ async function refreshChallengeSummary() {
         return `
           <tr>
             <td>${fmtDate(c.created_at)}</td>
-            <td>${escapeHtml(profileMap.get(opp)?.full_name || "—")}</td>
+            <td>
+              <div class="table-user">
+                ${renderAvatarHtml(profileMap.get(opp), 28)}
+                <span>${escapeHtml(profileMap.get(opp)?.full_name || "—")}</span>
+              </div>
+            </td>
             <td><strong>${myPts}</strong></td>
             <td>${theirPts}</td>
             <td>${badge}</td>
@@ -1548,7 +1767,7 @@ window.declineChallenge = async function (challengeId) {
 // ----------------------------------------------------------------------------
 window.openChallengeRoom = async function (challengeId) {
   activeChallengeId = challengeId;
-  lastChallengeSignature = null;   // force first render
+  lastChallengeSignature = null;
   hasAutoFocusedOwn = false;
   document.getElementById("challenge-room-modal").classList.remove("hidden");
   await refreshChallengeRoom();
@@ -1600,7 +1819,6 @@ async function refreshChallengeRoom() {
   const myPoints      = isChallenger ? row.challenger_points       : row.opponent_points;
   const oppPoints     = isChallenger ? row.opponent_points         : row.challenger_points;
 
-  // Signature of relevant state — skip re-render if nothing changed
   const signature = JSON.stringify({
     status: row.status,
     myResult, oppResult, myStealResult,
@@ -1608,10 +1826,9 @@ async function refreshChallengeRoom() {
     winner: row.winner_id,
     myQId, oppQId,
   });
-  if (signature === lastChallengeSignature) return;  // ← THE KEY FIX
+  if (signature === lastChallengeSignature) return;
   lastChallengeSignature = signature;
 
-  // Preserve any values the user is typing before we blow away the DOM
   const prevOwnInputs  = Array.from(document.querySelectorAll('#challenge-my-question .challenge-answer-slot'));
   const prevOwnValues  = prevOwnInputs.map(i => i.value);
   const prevOwnFocusIdx = (() => {
@@ -1625,9 +1842,8 @@ async function refreshChallengeRoom() {
     return a && a.classList.contains('challenge-steal-answer-slot') ? parseInt(a.dataset.index) : -1;
   })();
 
-  // Fetch profiles + questions + slot counts in parallel
   const { data: profs } = await supabaseClient
-    .from("profiles").select("id, full_name")
+    .from("profiles").select("id, full_name, avatar_url")
     .in("id", [row.challenger_id, row.opponent_id]);
   const profileMap = new Map((profs || []).map(p => [p.id, p]));
 
@@ -1649,14 +1865,19 @@ async function refreshChallengeRoom() {
   const mySlots  = slotMap.get(myQId)  ?? 0;
   const oppSlots = slotMap.get(oppQId) ?? 0;
   const oppId = isChallenger ? row.opponent_id : row.challenger_id;
+  const oppProfile = profileMap.get(oppId);
 
-  // --- Scoreboard ---
+  // Scoreboard
   document.getElementById("challenger-name").textContent = "You";
   document.getElementById("challenger-points").textContent = `${myPoints} pts`;
-  document.getElementById("opponent-name").textContent = profileMap.get(oppId)?.full_name || "Opponent";
+  document.getElementById("opponent-name").textContent = oppProfile?.full_name || "Opponent";
   document.getElementById("opponent-points").textContent = `${oppPoints} pts`;
+  const ca = document.getElementById("challenger-avatar");
+  if (ca) ca.innerHTML = renderAvatarHtml(currentProfile, 48);
+  const oa = document.getElementById("opponent-avatar");
+  if (oa) oa.innerHTML = renderAvatarHtml(oppProfile || { full_name: "?" }, 48);
 
-  // --- My question area ---
+  // My question area
   const qArea = document.getElementById("challenge-my-question");
   if (row.status !== "active") {
     qArea.innerHTML = `<p class="muted">Challenge not active.</p>`;
@@ -1690,7 +1911,6 @@ async function refreshChallengeRoom() {
         </div>
       </form>`;
 
-    // Restore previous input values + focus (only if re-rendering mid-typing)
     const newInputs = qArea.querySelectorAll(".challenge-answer-slot");
     newInputs.forEach((inp, i) => {
       if (prevOwnValues[i] !== undefined) inp.value = prevOwnValues[i];
@@ -1705,7 +1925,7 @@ async function refreshChallengeRoom() {
     qArea.innerHTML = `<p class="muted">No question assigned.</p>`;
   }
 
-  // --- Steal area ---
+  // Steal area
   const stealArea = document.getElementById("challenge-steal-area");
   const stealQArea = document.getElementById("challenge-steal-question");
   const canSteal = oppResult && oppResult !== "correct" && !myStealResult
@@ -1713,7 +1933,7 @@ async function refreshChallengeRoom() {
   if (canSteal && oppQ) {
     stealArea.classList.remove("hidden");
     document.getElementById("challenge-steal-desc").textContent =
-      `${profileMap.get(oppId)?.full_name || "Opponent"} missed their question. Solve it to steal +${oppQ.points} points!`;
+      `${oppProfile?.full_name || "Opponent"} missed their question. Solve it to steal +${oppQ.points} points!`;
     const slots = oppSlots > 0 ? oppSlots : 1;
     let inputsHtml = "";
     for (let i = 0; i < slots; i++) {
@@ -1748,7 +1968,7 @@ async function refreshChallengeRoom() {
     stealArea.classList.add("hidden");
   }
 
-  // --- Result banner ---
+  // Result banner
   const resultBanner = document.getElementById("challenge-result-banner");
   if (row.status === "completed") {
     resultBanner.classList.remove("hidden", "win", "loss", "draw");
@@ -1766,7 +1986,7 @@ async function refreshChallengeRoom() {
     resultBanner.classList.add("hidden");
   }
 
-  // --- Auto-finalize ---
+  // Auto-finalize
   if (row.status === "active") {
     const bothOwnDone = row.challenger_result && row.opponent_result;
     const chDone = row.challenger_result === "correct" || row.challenger_steal_result;
@@ -1832,7 +2052,7 @@ window.submitChallengeOwnAnswer = async function (e) {
   } else {
     showToast("❌ Wrong — your opponent may steal.", "error");
   }
-  lastChallengeSignature = null;  // force re-render so the input is replaced by the result badge
+  lastChallengeSignature = null;
   await refreshChallengeRoom();
 };
 
