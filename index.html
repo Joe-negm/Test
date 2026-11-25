@@ -6,7 +6,7 @@
   <title>Cambridge Math Arena</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@500;600;700;800&family=Outfit:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@500;600;700;800&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -15,7 +15,6 @@
 </head>
 <body>
   <div id="toast-container" class="toast-container"></div>
-
   <div id="config-banner" class="config-banner hidden">
     <span>⚠️ Supabase is not connected yet.</span>
     <button id="open-config-btn" class="btn btn-sm btn-amber">Connect Supabase</button>
@@ -23,18 +22,16 @@
 
   <main id="auth-section" class="auth-wrapper">
     <div class="auth-hero">
-      <div class="math-floaters" aria-hidden="true">
-        <span>π</span><span>∑</span><span>△</span><span>÷</span><span>√</span><span>∠</span>
-      </div>
+      <div class="math-floaters" aria-hidden="true"><span>π</span><span>∑</span><span>△</span><span>÷</span><span>√</span><span>∠</span></div>
       <div class="brand-pill">Cambridge Primary &amp; Lower Secondary</div>
       <h1>Cambridge Math Arena</h1>
       <p>Visual problem-solving for Stages 1–9. Practice topic-based picture questions, climb your class leaderboard, and compete across all schools.</p>
       <div class="feature-highlights">
         <div class="highlight-item">🏫 <strong>School Classrooms:</strong> Teachers register students with school names</div>
         <div class="highlight-item">🖼️ <strong>Visual Questions:</strong> Diagram &amp; word-problem challenges</div>
-        <div class="highlight-item">🏆 <strong>Weekly Certificates:</strong> Auto-generated every Thursday at 3 PM</div>
-        <div class="highlight-item">🤖 <strong>AI Hints:</strong> Guidance when you get stuck (without the answer)</div>
-        <div class="highlight-item">💬 <strong>Direct Messages:</strong> Ask your teacher for help anytime</div>
+        <div class="highlight-item">⚔️ <strong>1v1 Challenges:</strong> Challenge classmates in real time</div>
+        <div class="highlight-item">🏆 <strong>Weekly Certificates:</strong> Auto-generated every Thursday</div>
+        <div class="highlight-item">🤖 <strong>AI Hints:</strong> Guidance when you get stuck</div>
       </div>
       <button id="auth-config-trigger" class="btn-link-subtle">⚙️ Configure Supabase Connection</button>
     </div>
@@ -192,12 +189,10 @@
           <div class="stat-card"><span class="stat-label">Fee-Waived</span><strong id="owner-stat-waived" class="stat-value text-emerald">0</strong></div>
           <div class="stat-card"><span class="stat-label">Total Students</span><strong id="owner-stat-students" class="stat-value text-blue">0</strong></div>
         </div>
-        <div class="card">
-          <div class="table-responsive"><table class="data-table">
-            <thead><tr><th>Teacher</th><th>School</th><th>Students</th><th>Trial Ends</th><th>Status</th><th>Action</th></tr></thead>
-            <tbody id="owner-teachers-tbody"></tbody>
-          </table></div>
-        </div>
+        <div class="card"><div class="table-responsive"><table class="data-table">
+          <thead><tr><th>Teacher</th><th>School</th><th>Students</th><th>Trial Ends</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody id="owner-teachers-tbody"></tbody>
+        </table></div></div>
       </section>
 
       <!-- OWNER: AI Hints -->
@@ -206,12 +201,10 @@
           <h2>🤖 AI Hint Log</h2>
           <p>Every hint the AI generated, across all students and teachers.</p>
         </div></div>
-        <div class="card">
-          <div class="table-responsive"><table class="data-table">
-            <thead><tr><th>When</th><th>Student</th><th>Question</th><th>Wrong Answer</th><th>AI Hint</th></tr></thead>
-            <tbody id="owner-hints-tbody"></tbody>
-          </table></div>
-        </div>
+        <div class="card"><div class="table-responsive"><table class="data-table">
+          <thead><tr><th>When</th><th>Student</th><th>Question</th><th>Wrong Answer</th><th>AI Hint</th></tr></thead>
+          <tbody id="owner-hints-tbody"></tbody>
+        </table></div></div>
       </section>
 
       <!-- TEACHER: Class Dashboard -->
@@ -252,18 +245,16 @@
         </div>
       </section>
 
-      <!-- TEACHER: Topics overview -->
+      <!-- TEACHER: Topics -->
       <section id="view-teacher-topics" class="view-panel hidden">
         <div class="panel-header"><div>
           <h2>📚 Topics Overview</h2>
           <p>All topics on the platform and how many questions each has.</p>
         </div></div>
-        <div class="card">
-          <div class="table-responsive"><table class="data-table">
-            <thead><tr><th>Topic</th><th>Stage Group</th><th>Questions</th><th>Solved by Your Class</th></tr></thead>
-            <tbody id="teacher-topics-tbody"></tbody>
-          </table></div>
-        </div>
+        <div class="card"><div class="table-responsive"><table class="data-table">
+          <thead><tr><th>Topic</th><th>Stage Group</th><th>Questions</th><th>Solved by Your Class</th></tr></thead>
+          <tbody id="teacher-topics-tbody"></tbody>
+        </table></div></div>
       </section>
 
       <!-- TEACHER: AI Hints -->
@@ -272,33 +263,62 @@
           <h2>🤖 AI Hints for Your Class</h2>
           <p>Recent AI-generated hints from your students.</p>
         </div></div>
-        <div class="card">
-          <div class="table-responsive"><table class="data-table">
-            <thead><tr><th>When</th><th>Student</th><th>Question</th><th>Wrong Answer</th><th>AI Hint</th></tr></thead>
-            <tbody id="teacher-hints-tbody"></tbody>
-          </table></div>
-        </div>
+        <div class="card"><div class="table-responsive"><table class="data-table">
+          <thead><tr><th>When</th><th>Student</th><th>Question</th><th>Wrong Answer</th><th>AI Hint</th></tr></thead>
+          <tbody id="teacher-hints-tbody"></tbody>
+        </table></div></div>
       </section>
 
       <!-- SHARED: Certificates -->
       <section id="view-certificates" class="view-panel hidden">
         <div class="panel-header">
-          <div>
-            <h2>🏆 Weekly Certificates</h2>
-            <p>Top 3 students by questions solved. Auto-generated every Thursday at 3:00 PM (Egypt time).</p>
-          </div>
-          <button id="owner-regenerate-certificates-btn" class="btn btn-amber btn-sm hidden">
-            🔄 Regenerate Now
-          </button>
+          <div><h2>🏆 Weekly Certificates</h2>
+            <p>Top 3 students by questions solved. Auto-generated every Thursday at 3:00 PM (Egypt time).</p></div>
+          <button id="owner-regenerate-certificates-btn" class="btn btn-amber btn-sm hidden">🔄 Regenerate Now</button>
         </div>
         <div id="certificates-list"></div>
+      </section>
+
+      <!-- SHARED: Challenges -->
+      <section id="view-challenges" class="view-panel hidden">
+        <div class="panel-header">
+          <div>
+            <h2>⚔️ 1v1 Student Challenges</h2>
+            <p>Challenge a classmate. Each round gives you a question you haven't solved yet. 60 seconds per round.</p>
+          </div>
+        </div>
+
+        <div id="incoming-challenges-card" class="card mb-md hidden">
+          <h3>🔔 Incoming Challenges</h3>
+          <div id="incoming-challenges-list"></div>
+        </div>
+
+        <div id="active-challenges-card" class="card mb-md hidden">
+          <h3>⚔️ Active Challenges</h3>
+          <div id="active-challenges-list"></div>
+        </div>
+
+        <div class="card mb-md">
+          <h3>🎯 Start a Challenge</h3>
+          <p class="muted mb-md">Pick a classmate from your teacher's class to challenge.</p>
+          <input type="search" id="challenge-classmate-search" class="search-input mb-md" placeholder="Search classmate..." style="max-width:320px;" />
+          <div id="classmates-list" class="classmates-grid"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-toolbar"><h3>📜 Challenge History</h3></div>
+          <div class="table-responsive"><table class="data-table">
+            <thead><tr><th>When</th><th>Opponent</th><th>Your Pts</th><th>Their Pts</th><th>Result</th></tr></thead>
+            <tbody id="challenge-history-tbody"></tbody>
+          </table></div>
+        </div>
       </section>
 
       <!-- STUDENT: Practice -->
       <section id="view-student-practice" class="view-panel hidden">
         <div class="student-welcome">
           <div><h2>📐 Choose a Topic</h2>
-            <p>Select a topic, inspect the image, and submit your answer. Wrong answers get an AI hint (no answer revealed).</p></div>
+            <p>Select a topic, inspect the image, and submit your answer. Wrong answers get an AI hint.</p></div>
           <div class="student-quick-stats">
             <div class="quick-pill">⭐ Score: <strong id="student-my-score">0</strong></div>
             <div class="quick-pill">✅ Solved: <strong id="student-my-solved">0</strong></div>
@@ -357,11 +377,47 @@
       <div id="inbox-contact-list" style="max-height:120px;overflow-y:auto;margin-bottom:12px;"></div>
       <div id="inbox-thread" style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;padding:10px;background:var(--bg);"></div>
       <form id="inbox-send-form" style="display:flex;gap:8px;margin-top:10px;">
-        <input type="text" id="inbox-input" placeholder="Type a message..."
-               style="flex:1;padding:8px;border:1.5px solid var(--border);border-radius:8px;" />
+        <input type="text" id="inbox-input" placeholder="Type a message..." style="flex:1;padding:8px;border:1.5px solid var(--border);border-radius:8px;" />
         <button type="submit" class="btn btn-primary btn-sm">Send</button>
       </form>
       <p id="inbox-empty-hint" class="muted" style="display:none;">Select a contact above to start chatting.</p>
+    </div>
+  </div>
+
+  <!-- Challenge room modal -->
+  <div id="challenge-room-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content challenge-room">
+      <button id="close-challenge-room" class="modal-close">&times;</button>
+
+      <div class="challenge-timer-bar">
+        <div class="challenge-timer-label">⏱️ Round Timer</div>
+        <div id="challenge-timer-display" class="challenge-timer-value">01:00.0</div>
+      </div>
+
+      <div class="challenge-vs-bar">
+        <div class="challenge-side">
+          <div id="challenger-name" class="challenge-side-name">You</div>
+          <div id="challenger-points" class="challenge-side-points">0 pts</div>
+        </div>
+        <div class="challenge-vs-text">VS</div>
+        <div class="challenge-side">
+          <div id="opponent-name" class="challenge-side-name">Opponent</div>
+          <div id="opponent-points" class="challenge-side-points">0 pts</div>
+        </div>
+      </div>
+
+      <div id="challenge-my-question" class="challenge-question-area">
+        <p class="muted">Loading your question…</p>
+      </div>
+
+      <div id="challenge-steal-area" class="challenge-steal-area hidden">
+        <h4>⚡ Steal Opportunity!</h4>
+        <p id="challenge-steal-desc" class="muted"></p>
+        <div id="challenge-steal-question" class="challenge-question-area"></div>
+      </div>
+
+      <div id="challenge-result-banner" class="challenge-result hidden"></div>
     </div>
   </div>
 
