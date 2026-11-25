@@ -29,9 +29,10 @@
       <div class="feature-highlights">
         <div class="highlight-item">🏫 <strong>School Classrooms:</strong> Teachers register students with school names</div>
         <div class="highlight-item">🖼️ <strong>Visual Questions:</strong> Diagram &amp; word-problem challenges</div>
-        <div class="highlight-item">⚔️ <strong>1v1 Challenges:</strong> Challenge classmates in real time</div>
+        <div class="highlight-item">⚔️ <strong>1v1 Challenges:</strong> Challenge anyone on the platform in real time</div>
+        <div class="highlight-item">🟢 <strong>Live Presence:</strong> See who's online and ready to duel</div>
         <div class="highlight-item">🏆 <strong>Weekly Certificates:</strong> Auto-generated every Thursday</div>
-        <div class="highlight-item">🤖 <strong>AI Hints:</strong> Guidance when you get stuck</div>
+        <div class="highlight-item">🖼️ <strong>Profile Avatars:</strong> Upload your own picture</div>
       </div>
       <button id="auth-config-trigger" class="btn-link-subtle">⚙️ Configure Supabase Connection</button>
     </div>
@@ -92,7 +93,8 @@
         <button id="inbox-btn" class="btn btn-outline btn-sm" style="position:relative;">
           💬 Inbox <span id="inbox-badge" class="badge badge-danger" style="margin-left:6px;display:none;">0</span>
         </button>
-        <div class="user-pill">
+        <div class="user-pill" id="user-pill" title="Click to change your avatar" style="cursor:pointer;">
+          <span id="header-avatar"></span>
           <span id="header-role-badge" class="badge">ROLE</span>
           <div class="user-meta">
             <strong id="header-user-name">User</strong>
@@ -284,7 +286,7 @@
         <div class="panel-header">
           <div>
             <h2>⚔️ 1v1 Student Challenges</h2>
-            <p>Challenge a classmate. Each round gives you a question you haven't solved yet. 60 seconds per round.</p>
+            <p>Challenge anyone on the platform. Each round gives you a question you haven't solved yet. 2 minutes per round.</p>
           </div>
         </div>
 
@@ -300,8 +302,8 @@
 
         <div class="card mb-md">
           <h3>🎯 Start a Challenge</h3>
-          <p class="muted mb-md">Pick a classmate from your teacher's class to challenge.</p>
-          <input type="search" id="challenge-classmate-search" class="search-input mb-md" placeholder="Search classmate..." style="max-width:320px;" />
+          <p class="muted mb-md">Pick anyone on the platform — online students are shown first with a green dot. Offline challenges sit until they log back in.</p>
+          <input type="search" id="challenge-classmate-search" class="search-input mb-md" placeholder="Search by name, username or school..." style="max-width:380px;" />
           <div id="classmates-list" class="classmates-grid"></div>
         </div>
 
@@ -368,16 +370,36 @@
     </div>
   </div>
 
+  <!-- Avatar modal -->
+  <div id="avatar-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content" style="max-width:420px;">
+      <button id="close-avatar-modal" class="modal-close">&times;</button>
+      <h3>Your Profile Picture</h3>
+      <p class="muted" style="font-size:0.9rem;margin-top:0;">Shown on the leaderboards, class dashboard, and challenge list.</p>
+      <div class="avatar-upload-area">
+        <div id="avatar-preview-large"></div>
+      </div>
+      <input type="file" id="avatar-file-input" accept="image/*" style="display:none;" />
+      <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;">
+        <button type="button" id="avatar-choose-btn" class="btn btn-outline btn-sm" style="flex:1;">📷 Choose Image</button>
+        <button type="button" id="avatar-remove-btn" class="btn btn-danger btn-sm" style="flex:1;">🗑️ Remove</button>
+      </div>
+      <button id="avatar-save-btn" class="btn btn-primary btn-block" style="margin-top:12px;">Save Avatar</button>
+      <p class="muted" style="font-size:0.8rem;margin-top:12px;">JPG or PNG, up to 2 MB. It'll be cropped to a circle.</p>
+    </div>
+  </div>
+
   <!-- Inbox modal -->
   <div id="inbox-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-backdrop"></div>
     <div class="modal-content" style="max-width:640px;">
       <button id="close-inbox-modal" class="modal-close">&times;</button>
       <h3>💬 Messages</h3>
-      <div id="inbox-contact-list" style="max-height:120px;overflow-y:auto;margin-bottom:12px;"></div>
+      <div id="inbox-contact-list" style="max-height:180px;overflow-y:auto;margin-bottom:12px;"></div>
       <div id="inbox-thread" style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;padding:10px;background:var(--bg);"></div>
       <form id="inbox-send-form" style="display:flex;gap:8px;margin-top:10px;">
-        <input type="text" id="inbox-input" placeholder="Type a message..." style="flex:1;padding:8px;border:1.5px solid var(--border);border-radius:8px;" />
+        <input type="text" id="inbox-input" placeholder="Type a message..." style="flex:1;min-width:0;padding:8px;border:1.5px solid var(--border);border-radius:8px;" />
         <button type="submit" class="btn btn-primary btn-sm">Send</button>
       </form>
       <p id="inbox-empty-hint" class="muted" style="display:none;">Select a contact above to start chatting.</p>
@@ -392,16 +414,18 @@
 
       <div class="challenge-timer-bar">
         <div class="challenge-timer-label">⏱️ Round Timer</div>
-        <div id="challenge-timer-display" class="challenge-timer-value">01:00.0</div>
+        <div id="challenge-timer-display" class="challenge-timer-value">02:00.0</div>
       </div>
 
       <div class="challenge-vs-bar">
         <div class="challenge-side">
+          <div id="challenger-avatar" class="challenge-side-avatar"></div>
           <div id="challenger-name" class="challenge-side-name">You</div>
           <div id="challenger-points" class="challenge-side-points">0 pts</div>
         </div>
         <div class="challenge-vs-text">VS</div>
         <div class="challenge-side">
+          <div id="opponent-avatar" class="challenge-side-avatar"></div>
           <div id="opponent-name" class="challenge-side-name">Opponent</div>
           <div id="opponent-points" class="challenge-side-points">0 pts</div>
         </div>
