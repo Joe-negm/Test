@@ -147,6 +147,7 @@ async function bootRoleWorkspace() {
   } else {
     tabs = [
       { id: "student-practice", label: "📐 Practice Topics" },
+      { id: "challenges", label: "⚔️ Challenges" },
       { id: "class-dashboard", label: "🏫 Class Dashboard" },
       { id: "certificates", label: "🏆 Certificates" },
       { id: "global-dashboard", label: "🌍 All Students Dashboard" },
@@ -179,12 +180,17 @@ async function switchWorkspaceView(viewId) {
   if (viewId === "class-dashboard") await loadStudentClassDashboard();
   if (viewId === "global-dashboard") await loadGlobalDashboard();
   if (viewId === "certificates") await loadCertificatesView();
+  if (viewId === "challenges") await loadChallengesView();
 
   const regenBtn = document.getElementById("owner-regenerate-certificates-btn");
   if (regenBtn) {
     regenBtn.classList.toggle("hidden",
       !(currentProfile.role === "owner" && viewId === "certificates"));
   }
+  if (viewId !== "challenges" && typeof summaryPollTimer !== "undefined" && summaryPollTimer) {
+  clearInterval(summaryPollTimer);
+  summaryPollTimer = null;
+}
 }
 
 // ----------------------------------------------------------------------------
@@ -333,6 +339,9 @@ function bindStaticEvents() {
   document.querySelector("#inbox-modal .modal-backdrop").addEventListener("click", () =>
     document.getElementById("inbox-modal").classList.add("hidden"));
   document.getElementById("inbox-send-form").addEventListener("submit", handleInboxSend);
+  document.getElementById("challenge-classmate-search")?.addEventListener("input", renderClassmateList);
+  document.getElementById("close-challenge-room")?.addEventListener("click", closeChallengeRoom);
+  document.querySelector("#challenge-room-modal .modal-backdrop")?.addEventListener("click", closeChallengeRoom);
 
   renderAnswerGroups();
 }
@@ -1266,3 +1275,419 @@ async function exportClassDashboardPDF() {
     showToast("PDF export failed: " + err.message, "error");
   }
 }
+// ============================================================================
+// 1v1 STUDENT CHALLENGES
+// ============================================================================
+let challengeRoomInterval = null;
+let challengePollInterval = null;
+let challengeRealtimeChannel = null;
+let cachedChallengeRow = null;
+let classmateCache = [];
+let summaryPollTimer = null;
+let activeChallengeId = null;
+
+async function loadChallengesView() {
+  await refreshChallengeSummary();
+
+  const { data: classmates } = await supabaseClient
+    .from("profiles")
+    .select("id, full_name, username, school_name, score")
+    .eq("role", "student")
+    .eq("teacher_id", currentProfile.teacher_id)
+    .neq("id", currentProfile.id)
+    .order("full_name");
+  classmateCache = classmates || [];
+  renderClassmateList();
+
+  if (summaryPollTimer) clearInterval(summaryPollTimer);
+  summaryPollTimer = setInterval(refreshChallengeSummary, 3000);
+}
+
+function renderClassmateList() {
+  const input = document.getElementById("challenge-classmate-search");
+  if (!input) return;
+  const query = (input.value || "").toLowerCase();
+  const filtered = classmateCache.filter(c =>
+    c.full_name.toLowerCase().includes(query) ||
+    (c.username || "").toLowerCase().includes(query)
+  );
+  const container = document.getElementById("classmates-list");
+  if (!container) return;
+  if (!filtered.length) {
+    container.innerHTML = `<p class="muted">No classmates yet — your teacher needs to register students first.</p>`;
+    return;
+  }
+  container.innerHTML = filtered.map(c => {
+    const initials = c.full_name.split(" ").map(p => p[0]).join("").slice(0, 2).toUpperCase();
+    return `
+      <div class="classmate-card">
+        <div class="classmate-avatar">${escapeHtml(initials)}</div>
+        <div class="classmate-info">
+          <strong>${escapeHtml(c.full_name)}</strong>
+          <small>${escapeHtml(c.username || "")} • ${c.score} pts</small>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="startChallenge('${c.id}')">⚔️</button>
+      </div>`;
+  }).join("");
+}
+
+window.startChallenge = async function (opponentId) {
+  if (!confirm("Send challenge invitation?")) return;
+  const { error } = await supabaseClient.rpc("create_challenge", { p_opponent_id: opponentId });
+  if (error) return showToast(error.message, "error");
+  showToast("Challenge sent! Waiting for opponent.", "success");
+  await refreshChallengeSummary();
+};
+
+async function refreshChallengeSummary() {
+  const myId = currentProfile.id;
+
+  // Pending incoming
+  const { data: incomingRows } = await supabaseClient
+    .from("challenges")
+    .select("id, challenger_id, created_at")
+    .eq("opponent_id", myId)
+    .eq("status", "pending")
+    .order("created_at", { ascending: false });
+
+  // Active
+  const { data: activeRows } = await supabaseClient
+    .from("challenges")
+    .select("id, challenger_id, opponent_id, round_started_at")
+    .or(`challenger_id.eq.${myId},opponent_id.eq.${myId}`)
+    .eq("status", "active")
+    .order("round_started_at", { ascending: false });
+
+  // History
+  const { data: historyRows } = await supabaseClient
+    .from("challenges")
+    .select("id, status, challenger_id, opponent_id, challenger_points, opponent_points, completed_at, created_at")
+    .or(`challenger_id.eq.${myId},opponent_id.eq.${myId}`)
+    .in("status", ["completed", "declined", "cancelled"])
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  // Fetch profiles for display
+  const allIds = new Set();
+  (incomingRows || []).forEach(r => allIds.add(r.challenger_id));
+  (activeRows || []).forEach(r => { allIds.add(r.challenger_id); allIds.add(r.opponent_id); });
+  (historyRows || []).forEach(r => { allIds.add(r.challenger_id); allIds.add(r.opponent_id); });
+
+  let profileMap = new Map();
+  if (allIds.size > 0) {
+    const { data: profs } = await supabaseClient
+      .from("profiles")
+      .select("id, full_name")
+      .in("id", Array.from(allIds));
+    (profs || []).forEach(p => profileMap.set(p.id, p));
+  }
+
+  // Render incoming
+  const incomingCard = document.getElementById("incoming-challenges-card");
+  const incomingList = document.getElementById("incoming-challenges-list");
+  if (incomingCard && incomingList) {
+    if (incomingRows && incomingRows.length) {
+      incomingCard.classList.remove("hidden");
+      incomingList.innerHTML = incomingRows.map(c => `
+        <div class="incoming-challenge-row">
+          <strong>${escapeHtml(profileMap.get(c.challenger_id)?.full_name || "Classmate")} challenges you!</strong>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-primary btn-sm" onclick="acceptChallenge('${c.id}')">✅ Accept</button>
+            <button class="btn btn-outline btn-sm" onclick="declineChallenge('${c.id}')">❌ Decline</button>
+          </div>
+        </div>`).join("");
+    } else {
+      incomingCard.classList.add("hidden");
+    }
+  }
+
+  // Render active
+  const activeCard = document.getElementById("active-challenges-card");
+  const activeList = document.getElementById("active-challenges-list");
+  if (activeCard && activeList) {
+    if (activeRows && activeRows.length) {
+      activeCard.classList.remove("hidden");
+      activeList.innerHTML = activeRows.map(c => {
+        const opp = c.challenger_id === myId ? c.opponent_id : c.challenger_id;
+        return `
+          <div class="active-challenge-row">
+            <strong>⚔️ vs ${escapeHtml(profileMap.get(opp)?.full_name || "Classmate")} — in progress</strong>
+            <button class="btn btn-primary btn-sm" onclick="openChallengeRoom('${c.id}')">🚪 Enter Room</button>
+          </div>`;
+      }).join("");
+    } else {
+      activeCard.classList.add("hidden");
+    }
+  }
+
+  // Render history
+  const tbody = document.getElementById("challenge-history-tbody");
+  if (tbody) {
+    if (!historyRows || !historyRows.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">No past challenges yet.</td></tr>`;
+    } else {
+      tbody.innerHTML = historyRows.map(c => {
+        const iAmChallenger = c.challenger_id === myId;
+        const opp = iAmChallenger ? c.opponent_id : c.challenger_id;
+        const myPts = iAmChallenger ? c.challenger_points : c.opponent_points;
+        const theirPts = iAmChallenger ? c.opponent_points : c.challenger_points;
+        let badge;
+        if (c.status === "declined") badge = `<span class="badge badge-warning">Declined</span>`;
+        else if (c.status === "cancelled") badge = `<span class="badge badge-danger">Cancelled</span>`;
+        else if (myPts > theirPts) badge = `<span class="badge badge-success">🥇 Win</span>`;
+        else if (theirPts > myPts) badge = `<span class="badge badge-danger">Loss</span>`;
+        else badge = `<span class="badge badge-warning">Draw</span>`;
+        return `
+          <tr>
+            <td>${fmtDate(c.created_at)}</td>
+            <td>${escapeHtml(profileMap.get(opp)?.full_name || "—")}</td>
+            <td><strong>${myPts}</strong></td>
+            <td>${theirPts}</td>
+            <td>${badge}</td>
+          </tr>`;
+      }).join("");
+    }
+  }
+}
+
+window.acceptChallenge = async function (challengeId) {
+  const { error } = await supabaseClient.rpc("accept_challenge", { p_challenge_id: challengeId });
+  if (error) return showToast(error.message, "error");
+  showToast("Challenge accepted! Starting…", "success");
+  await openChallengeRoom(challengeId);
+};
+
+window.declineChallenge = async function (challengeId) {
+  if (!confirm("Decline this challenge?")) return;
+  const { error } = await supabaseClient.rpc("decline_challenge", { p_challenge_id: challengeId });
+  if (error) return showToast(error.message, "error");
+  showToast("Challenge declined.", "info");
+  await refreshChallengeSummary();
+};
+
+window.openChallengeRoom = async function (challengeId) {
+  activeChallengeId = challengeId;
+  document.getElementById("challenge-room-modal").classList.remove("hidden");
+  await refreshChallengeRoom();
+  if (challengeRoomInterval) clearInterval(challengeRoomInterval);
+  challengeRoomInterval = setInterval(tickChallengeTimer, 100);
+
+  if (challengeRealtimeChannel) await supabaseClient.removeChannel(challengeRealtimeChannel);
+  challengeRealtimeChannel = supabaseClient
+    .channel(`challenge-${challengeId}`)
+    .on("postgres_changes",
+      { event: "UPDATE", schema: "public", table: "challenges", filter: `id=eq.${challengeId}` },
+      () => refreshChallengeRoom())
+    .subscribe();
+
+  if (challengePollInterval) clearInterval(challengePollInterval);
+  challengePollInterval = setInterval(refreshChallengeRoom, 2000);
+};
+
+window.closeChallengeRoom = async function () {
+  document.getElementById("challenge-room-modal").classList.add("hidden");
+  if (challengeRoomInterval) { clearInterval(challengeRoomInterval); challengeRoomInterval = null; }
+  if (challengePollInterval) { clearInterval(challengePollInterval); challengePollInterval = null; }
+  if (challengeRealtimeChannel) {
+    await supabaseClient.removeChannel(challengeRealtimeChannel);
+    challengeRealtimeChannel = null;
+  }
+  activeChallengeId = null;
+  cachedChallengeRow = null;
+  await refreshChallengeSummary();
+};
+
+async function refreshChallengeRoom() {
+  if (!activeChallengeId) return;
+  const myId = currentProfile.id;
+
+  const { data: row, error } = await supabaseClient
+    .from("challenges").select("*").eq("id", activeChallengeId).single();
+  if (error || !row) return;
+  cachedChallengeRow = row;
+
+  // Fetch profiles
+  const { data: profs } = await supabaseClient
+    .from("profiles").select("id, full_name")
+    .in("id", [row.challenger_id, row.opponent_id]);
+  const profileMap = new Map((profs || []).map(p => [p.id, p]));
+
+  // Fetch questions
+  const qIds = [row.challenger_question_id, row.opponent_question_id].filter(Boolean);
+  let qMap = new Map();
+  if (qIds.length) {
+    const { data: qs } = await supabaseClient
+      .from("questions").select("id, title, image_url, points").in("id", qIds);
+    (qs || []).forEach(q => qMap.set(q.id, q));
+  }
+
+  const isChallenger = row.challenger_id === myId;
+  const myQ = qMap.get(isChallenger ? row.challenger_question_id : row.opponent_question_id);
+  const oppQ = qMap.get(isChallenger ? row.opponent_question_id : row.challenger_question_id);
+  const myPoints = isChallenger ? row.challenger_points : row.opponent_points;
+  const oppPoints = isChallenger ? row.opponent_points : row.challenger_points;
+  const myResult = isChallenger ? row.challenger_result : row.opponent_result;
+  const oppResult = isChallenger ? row.opponent_result : row.challenger_result;
+  const myStealResult = isChallenger ? row.challenger_steal_result : row.opponent_steal_result;
+  const oppId = isChallenger ? row.opponent_id : row.challenger_id;
+
+  // Scoreboard
+  document.getElementById("challenger-name").textContent = "You";
+  document.getElementById("challenger-points").textContent = `${myPoints} pts`;
+  document.getElementById("opponent-name").textContent = profileMap.get(oppId)?.full_name || "Opponent";
+  document.getElementById("opponent-points").textContent = `${oppPoints} pts`;
+
+  // My question area
+  const qArea = document.getElementById("challenge-my-question");
+  if (row.status !== "active") {
+    qArea.innerHTML = `<p class="muted">Challenge not active.</p>`;
+  } else if (myResult) {
+    let badge;
+    if (myResult === "correct") badge = `<span class="badge badge-success">✅ Correct (+${myQ?.points || 0} pts)</span>`;
+    else if (myResult === "wrong") badge = `<span class="badge badge-danger">❌ Wrong</span>`;
+    else badge = `<span class="badge badge-warning">⏱️ Timeout</span>`;
+    qArea.innerHTML = `<p>${badge}</p>`;
+  } else if (myQ) {
+    qArea.innerHTML = `
+      <div class="question-meta" style="margin-bottom:0.5rem;">
+        <span class="stage-tag">${escapeHtml(myQ.title)}</span>
+        <span class="points-tag">+${myQ.points} pts</span>
+      </div>
+      <img class="challenge-question-img" src="${escapeHtml(myQ.image_url)}"
+           onclick="openImageZoom('${escapeHtml(myQ.image_url)}')" />
+      <form class="challenge-answer-form" onsubmit="submitChallengeOwnAnswer(event)">
+        <input type="text" id="challenge-own-answer" placeholder="Your answer..." required autocomplete="off" />
+        <button type="submit">Submit</button>
+      </form>`;
+    setTimeout(() => document.getElementById("challenge-own-answer")?.focus(), 100);
+  } else {
+    qArea.innerHTML = `<p class="muted">No question assigned.</p>`;
+  }
+
+  // Steal area
+  const stealArea = document.getElementById("challenge-steal-area");
+  const stealQArea = document.getElementById("challenge-steal-question");
+  const canSteal = oppResult && oppResult !== "correct" && !myStealResult && row.status === "active" && myResult;
+  if (canSteal && oppQ) {
+    stealArea.classList.remove("hidden");
+    document.getElementById("challenge-steal-desc").textContent =
+      `${profileMap.get(oppId)?.full_name || "Opponent"} missed their question. Solve it to steal +${oppQ.points} points!`;
+    stealQArea.innerHTML = `
+      <div class="question-meta" style="margin-bottom:0.5rem;">
+        <span class="stage-tag">${escapeHtml(oppQ.title)}</span>
+        <span class="points-tag">+${oppQ.points} pts</span>
+      </div>
+      <img class="challenge-question-img" src="${escapeHtml(oppQ.image_url)}"
+           onclick="openImageZoom('${escapeHtml(oppQ.image_url)}')" />
+      <form class="challenge-answer-form" onsubmit="submitChallengeStealAnswer(event)">
+        <input type="text" id="challenge-steal-answer" placeholder="Steal answer..." required autocomplete="off" />
+        <button type="submit">⚡ Steal</button>
+      </form>`;
+  } else {
+    stealArea.classList.add("hidden");
+  }
+
+  // Result banner
+  const resultBanner = document.getElementById("challenge-result-banner");
+  if (row.status === "completed") {
+    resultBanner.classList.remove("hidden", "win", "loss", "draw");
+    if (row.winner_id === myId) {
+      resultBanner.classList.add("win");
+      resultBanner.textContent = `🏆 You won! ${myPoints} vs ${oppPoints}`;
+    } else if (!row.winner_id) {
+      resultBanner.classList.add("draw");
+      resultBanner.textContent = `🤝 Draw — ${myPoints} vs ${oppPoints}`;
+    } else {
+      resultBanner.classList.add("loss");
+      resultBanner.textContent = `❌ You lost — ${myPoints} vs ${oppPoints}`;
+    }
+  } else {
+    resultBanner.classList.add("hidden");
+  }
+
+  // Auto-finalize
+  if (row.status === "active") {
+    const bothOwnDone = row.challenger_result && row.opponent_result;
+    const chDone = row.challenger_result === "correct" || row.challenger_steal_result;
+    const opDone = row.opponent_result === "correct" || row.opponent_steal_result;
+    if (bothOwnDone && chDone && opDone) {
+      await supabaseClient.rpc("finalize_challenge", { p_challenge_id: activeChallengeId });
+    }
+  }
+}
+
+function tickChallengeTimer() {
+  if (!cachedChallengeRow || cachedChallengeRow.status !== "active") return;
+  const startedMs = new Date(cachedChallengeRow.round_started_at).getTime();
+  const durationMs = (cachedChallengeRow.round_duration_sec || 60) * 1000;
+  const remaining = Math.max(0, durationMs - (Date.now() - startedMs));
+
+  const el = document.getElementById("challenge-timer-display");
+  if (!el) return;
+  const totalSec = Math.floor(remaining / 1000);
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  const tenths = Math.floor((remaining % 1000) / 100);
+  el.textContent = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${tenths}`;
+  el.classList.toggle("urgent", remaining <= 10000 && remaining > 0);
+
+  // Mark timeouts (own side; also opponent if we're 65s in and they haven't answered)
+  const myId = currentProfile.id;
+  const isMeChallenger = cachedChallengeRow.challenger_id === myId;
+
+  if (remaining === 0) {
+    const myResult = isMeChallenger ? cachedChallengeRow.challenger_result : cachedChallengeRow.opponent_result;
+    const oppResult = isMeChallenger ? cachedChallengeRow.opponent_result : cachedChallengeRow.challenger_result;
+    const mySide = isMeChallenger ? "challenger" : "opponent";
+    const oppSide = isMeChallenger ? "opponent" : "challenger";
+
+    if (!myResult) {
+      supabaseClient.rpc("timeout_challenge_side", {
+        p_challenge_id: activeChallengeId, p_side: mySide,
+      }).then(() => refreshChallengeRoom());
+    }
+    // Grace period: after 65s mark opponent timeout too (so finalization can proceed even if they left)
+    if (Date.now() - startedMs >= 65000 && !oppResult) {
+      supabaseClient.rpc("timeout_challenge_side", {
+        p_challenge_id: activeChallengeId, p_side: oppSide,
+      }).then(() => refreshChallengeRoom());
+    }
+  }
+}
+
+window.submitChallengeOwnAnswer = async function (e) {
+  e.preventDefault();
+  const answer = document.getElementById("challenge-own-answer").value.trim();
+  if (!answer) return;
+  const { data, error } = await supabaseClient.rpc("submit_challenge_own_answer", {
+    p_challenge_id: activeChallengeId, p_answer: answer,
+  });
+  if (error) return showToast(error.message, "error");
+  if (data.is_correct) {
+    showToast(`✅ Correct! +${data.points_awarded} points`, "success");
+    currentProfile.score = data.new_score;
+    currentProfile.questions_solved = data.questions_solved;
+    document.getElementById("header-score-badge").textContent = `${data.new_score} pts`;
+  } else {
+    showToast("❌ Wrong — your opponent may steal.", "error");
+  }
+  await refreshChallengeRoom();
+};
+
+window.submitChallengeStealAnswer = async function (e) {
+  e.preventDefault();
+  const answer = document.getElementById("challenge-steal-answer").value.trim();
+  if (!answer) return;
+  const { data, error } = await supabaseClient.rpc("submit_challenge_steal_answer", {
+    p_challenge_id: activeChallengeId, p_answer: answer,
+  });
+  if (error) return showToast(error.message, "error");
+  if (data.is_correct) {
+    showToast(`⚡ STOLEN! +${data.points_awarded} points`, "success");
+    currentProfile.score = data.new_score;
+    document.getElementById("header-score-badge").textContent = `${data.new_score} pts`;
+  } else {
+    showToast("❌ Steal failed.", "error");
+  }
+  await refreshChallengeRoom();
+};
