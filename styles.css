@@ -586,6 +586,136 @@ h1, h2, h3, h4, .logo-title { font-family: 'Outfit', sans-serif; color: var(--na
   .challenge-vs-bar { flex-direction: column; }
   .challenge-vs-text { display: none; }
 }
+/* ==========================================================================
+   Online presence indicators
+   ========================================================================== */
+.classmate-card { position: relative; }
+.classmate-card.online { border-color: #86efac; box-shadow: 0 0 0 2px rgba(34,197,94,.08); }
+.classmate-avatar { position: relative; }
+
+.online-dot {
+  position: absolute; bottom: -2px; right: -2px;
+  width: 12px; height: 12px;
+  background: #22c55e;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #16a34a;
+}
+.offline-dot {
+  position: absolute; bottom: -2px; right: -2px;
+  width: 12px; height: 12px;
+  background: #cbd5e1;
+  border: 2px solid #fff;
+  border-radius: 50%;
+}
+.mini-tag {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 0.7rem;
+  background: var(--blue-soft); color: var(--blue);
+  padding: 1px 6px; border-radius: 6px;
+  font-weight: 700;
+}
+.mini-tag.muted-tag { background: #f1f5f9; color: var(--muted); }
+
+/* ==========================================================================
+   Responsive / viewport adaptation
+   ========================================================================== */
+
+/* Tablet & below */
+@media (max-width: 1024px) {
+  .auth-wrapper { grid-template-columns: 1fr; padding: 1.5rem 1rem; min-height: auto; }
+  .auth-hero { padding: 2rem; }
+  .auth-hero h1 { font-size: 2rem; }
+  .grid-2-col, .grid-teacher { grid-template-columns: 1fr; }
+  .workspace { padding: 1.25rem 1rem 2rem; }
+  .top-header { padding: 0.75rem 1rem; }
+  .main-nav { width: 100%; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+  .main-nav::-webkit-scrollbar { height: 4px; }
+  .nav-btn { white-space: nowrap; flex-shrink: 0; }
+}
+
+/* Phone */
+@media (max-width: 720px) {
+  body { font-size: 15px; }
+  .auth-wrapper { padding: 1rem 0.75rem; }
+  .auth-hero { padding: 1.5rem; }
+  .auth-hero h1 { font-size: 1.7rem; }
+  .auth-hero p { font-size: 0.95rem; }
+  .auth-card { padding: 1.25rem; }
+  .auth-tabs { grid-template-columns: 1fr; }
+  .auth-tab { text-align: left; padding: 0.65rem 0.9rem; }
+
+  .top-header { gap: 0.5rem; flex-wrap: wrap; }
+  .header-left { flex: 1 1 100%; }
+  .header-right { flex: 1 1 100%; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem; }
+  .user-pill { flex: 1; min-width: 0; }
+  .user-meta strong, .user-meta small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .logo-title { font-size: 1rem; }
+  .logo-sub { font-size: 0.7rem; }
+
+  .workspace { padding: 1rem 0.75rem 2rem; }
+  .card { padding: 1rem; }
+  .card-toolbar { flex-direction: column; align-items: stretch; }
+  .select-inline, .search-input { width: 100%; min-width: 0; }
+
+  .stats-row { grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+  .stat-value { font-size: 1.5rem; }
+  .form-row { flex-direction: column; gap: 0; }
+  .panel-header { flex-direction: column; align-items: flex-start; }
+
+  .questions-grid, .student-questions-grid { grid-template-columns: 1fr; }
+  .topics-grid { grid-template-columns: 1fr 1fr; }
+  .question-img-box { height: 180px; }
+  .classmates-grid { grid-template-columns: 1fr; }
+
+  .student-welcome { flex-direction: column; align-items: flex-start; }
+  .student-quick-stats { width: 100%; flex-wrap: wrap; }
+  .quick-pill { flex: 1; text-align: center; }
+
+  /* Modals */
+  .modal-content {
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px) !important;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+    padding: 1.25rem;
+  }
+  .modal-image-box { padding: 0.5rem; }
+  .modal-image-box img { max-width: 100%; height: auto; }
+
+  /* Challenge room */
+  .challenge-vs-bar { flex-direction: column; gap: 0.5rem; }
+  .challenge-vs-text { margin: 0; font-size: 1rem; }
+  .challenge-side { text-align: center; }
+  .challenge-timer-bar { flex-direction: column; align-items: flex-start; gap: 0.25rem; }
+  .challenge-timer-value { font-size: 1.5rem; }
+  .challenge-question-img { max-height: 220px; }
+
+  /* Inbox */
+  #inbox-thread { max-height: 45vh; }
+  #inbox-send-form { flex-wrap: wrap; }
+  #inbox-send-form input { min-width: 0; }
+}
+
+/* Small phone */
+@media (max-width: 480px) {
+  .topics-grid { grid-template-columns: 1fr; }
+  .stats-row { grid-template-columns: 1fr; }
+  .auth-hero h1 { font-size: 1.5rem; }
+  .logo-mark { width: 36px; height: 36px; font-size: 1.2rem; }
+  .badge, .score-pill { font-size: 0.68rem; padding: 0.18rem 0.45rem; }
+  .nav-btn { font-size: 0.8rem; padding: 0.45rem 0.7rem; }
+  .question-img-box { height: 150px; }
+  .btn { padding: 0.6rem 1rem; font-size: 0.9rem; }
+  .btn-sm { padding: 0.4rem 0.7rem; font-size: 0.8rem; }
+}
+
+/* Tables scroll horizontally on small screens */
+@media (max-width: 900px) {
+  .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .data-table { min-width: 600px; }
+}
 @media (max-width: 900px) {
   .auth-wrapper, .grid-2-col, .grid-teacher { grid-template-columns: 1fr; }
   .form-row { flex-direction: column; gap: 0; }
