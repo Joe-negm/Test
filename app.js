@@ -1034,4 +1034,235 @@ async function handleInboxSend(e) {
   });
   if (error) return showToast(error.message, "error");
   input.value = "";
-  await render
+  await renderThread();
+}
+
+// ----------------------------------------------------------------------------
+// Weekly certificates
+// ----------------------------------------------------------------------------
+async function loadCertificatesView() {
+  const container = document.getElementById("certificates-list");
+  container.innerHTML = `<p class="muted">Loading…</p>`;
+
+  const { data, error } = await supabaseClient
+    .from("weekly_certificates")
+    .select("*")
+    .order("week_start", { ascending: false })
+    .order("rank", { ascending: true });
+
+  if (error) {
+    container.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
+    return;
+  }
+  if (!data || data.length === 0) {
+    container.innerHTML = `
+      <div class="cert-empty">
+        <div style="font-size:2.5rem;">🏆</div>
+        <p>No certificates yet.</p>
+        <p class="muted">The first batch will be generated on the next Thursday at 3:00 PM.</p>
+      </div>`;
+    certCache = [];
+    return;
+  }
+  certCache = data;
+
+  const byWeek = new Map();
+  data.forEach(c => {
+    if (!byWeek.has(c.week_start)) byWeek.set(c.week_start, []);
+    byWeek.get(c.week_start).push(c);
+  });
+
+  const medals = { 1: "🥇", 2: "🥈", 3: "🥉" };
+
+  container.innerHTML = Array.from(byWeek.entries()).map(([weekStart, certs]) => {
+    const weekEnd = certs[0]?.week_end || weekStart;
+    const cardsHtml = certs.map(c => {
+      const isMe = currentProfile && c.student_id === currentProfile.id;
+      return `
+        <div class="cert-card rank-${c.rank} ${isMe ? "me" : ""}">
+          <div class="cert-medal">${medals[c.rank] || "🏅"}</div>
+          <div class="cert-name">${escapeHtml(c.student_name)}</div>
+          <div class="cert-school">${escapeHtml(c.school_name || "—")}</div>
+          <div class="cert-stats">${c.questions_solved} question(s) solved</div>
+          <button class="btn btn-primary btn-sm cert-download-btn"
+            onclick="downloadCertificateById('${c.id}')">
+            ⬇️ Download PDF
+          </button>
+        </div>`;
+    }).join("");
+
+    return `
+      <div class="cert-week-block">
+        <div class="cert-week-title">
+          <span>📅 Week of ${new Date(weekStart).toLocaleDateString()} – ${new Date(weekEnd).toLocaleDateString()}</span>
+          <button class="btn btn-outline btn-sm" onclick="downloadAllWeekByDate('${weekStart}')">
+            Download all 3
+          </button>
+        </div>
+        <div class="cert-grid">${cardsHtml}</div>
+      </div>`;
+  }).join("");
+}
+
+window.downloadCertificateById = function (id) {
+  const cert = certCache.find(c => c.id === id);
+  if (!cert) return showToast("Certificate not found.", "error");
+  try { drawCertificatePDF(cert); }
+  catch (err) { showToast("Certificate failed: " + err.message, "error"); }
+};
+
+window.downloadAllWeekByDate = function (weekStart) {
+  const certs = certCache.filter(c => c.week_start === weekStart);
+  certs.forEach((c, i) => setTimeout(() => {
+    try { drawCertificatePDF(c); } catch (err) { /* silent per-file error */ }
+  }, i * 300));
+};
+
+function drawCertificatePDF(cert) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+
+  const W = doc.internal.pageSize.getWidth();
+  const H = doc.internal.pageSize.getHeight();
+
+  // Outer navy border
+  doc.setDrawColor(15, 41, 66);
+  doc.setLineWidth(3);
+  doc.rect(8, 8, W - 16, H - 16);
+
+  // Inner amber border
+  doc.setDrawColor(217, 119, 6);
+  doc.setLineWidth(0.8);
+  doc.rect(11, 11, W - 22, H - 22);
+
+  // Header
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(100, 116, 139);
+  doc.text("CAMBRIDGE MATH ARENA", W / 2, 28, { align: "center" });
+
+  doc.setFontSize(26);
+  doc.setTextColor(15, 41, 66);
+  doc.text("Certificate of Achievement", W / 2, 48, { align: "center" });
+
+  // Body
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(12);
+  doc.setTextColor(100, 116, 139);
+  doc.text("This certificate is proudly presented to", W / 2, 72, { align: "center" });
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(28);
+  doc.setTextColor(29, 78, 216);
+  doc.text(cert.student_name, W / 2, 92, { align: "center" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(12);
+  doc.setTextColor(30, 41, 59);
+  doc.text(`For ranking #${cert.rank} in the weekly math challenge`, W / 2, 112, { align: "center" });
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(15);
+  doc.setTextColor(217, 119, 6);
+  doc.text(`${cert.questions_solved} questions solved`, W / 2, 128, { align: "center" });
+
+  if (cert.school_name) {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.setTextColor(100, 116, 139);
+    doc.text(cert.school_name, W / 2, 142, { align: "center" });
+  }
+
+  doc.setFontSize(10);
+  doc.text(
+    `Week of ${new Date(cert.week_start).toLocaleDateString()} – ${new Date(cert.week_end).toLocaleDateString()}`,
+    W / 2, 158, { align: "center" }
+  );
+
+  // Big rank number on the left
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(48);
+  doc.setTextColor(245, 158, 11);
+  doc.text(`#${cert.rank}`, 32, 128);
+
+  // Signature line + label
+  doc.setDrawColor(30, 41, 59);
+  doc.setLineWidth(0.3);
+  doc.line(W - 80, H - 32, W - 20, H - 32);
+  doc.setFont("helvetica", "italic");
+  doc.setFontSize(10);
+  doc.setTextColor(100, 116, 139);
+  doc.text("Platform Owner", W - 50, H - 27, { align: "center" });
+  doc.setFont("helvetica", "normal");
+  doc.text(new Date(cert.generated_at).toLocaleDateString(), W - 50, H - 22, { align: "center" });
+
+  const safeName = cert.student_name.replace(/[^a-zA-Z0-9]/g, "-");
+  doc.save(`certificate-${safeName}-rank${cert.rank}-${cert.week_start}.pdf`);
+}
+
+// ----------------------------------------------------------------------------
+// Teacher dashboard exports
+// ----------------------------------------------------------------------------
+async function exportClassDashboardExcel() {
+  if (!teacherStudentsCache.length) return showToast("No students to export.", "error");
+  try {
+    const rows = teacherStudentsCache.map((s, i) => ({
+      Rank: i + 1,
+      Student: s.full_name,
+      Username: s.username || "",
+      School: s.school_name || "",
+      "Questions Solved": s.questions_solved,
+      Score: s.score,
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = [{ wch: 6 }, { wch: 26 }, { wch: 18 }, { wch: 28 }, { wch: 16 }, { wch: 10 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Class Dashboard");
+    XLSX.writeFile(wb, `class-dashboard-${currentProfile.school_name || "class"}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    showToast("Excel file downloaded.", "success");
+  } catch (err) {
+    showToast("Excel export failed: " + err.message, "error");
+  }
+}
+async function exportClassDashboardPDF() {
+  if (!teacherStudentsCache.length) return showToast("No students to export.", "error");
+  try {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(18);
+    doc.setTextColor(15, 41, 66);
+    doc.text("Class Dashboard", 14, 20);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Teacher: ${currentProfile.full_name}`, 14, 28);
+    doc.text(`School: ${currentProfile.school_name || "—"}`, 14, 33);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 38);
+
+    const body = teacherStudentsCache.map((s, i) => [
+      i + 1, s.full_name, s.username || "",
+      s.school_name || "", s.questions_solved, s.score,
+    ]);
+
+    doc.autoTable({
+      startY: 46,
+      head: [["Rank", "Student", "Username", "School", "Solved", "Score"]],
+      body,
+      theme: "grid",
+      headStyles: { fillColor: [15, 41, 66], textColor: 255, fontStyle: "bold" },
+      styles: { fontSize: 9, cellPadding: 2 },
+      columnStyles: {
+        0: { cellWidth: 14 }, 1: { cellWidth: 46 }, 2: { cellWidth: 32 },
+        3: { cellWidth: 44 }, 4: { cellWidth: 22 }, 5: { cellWidth: 22 },
+      },
+    });
+
+    doc.save(`class-dashboard-${currentProfile.school_name || "class"}-${new Date().toISOString().slice(0, 10)}.pdf`);
+    showToast("PDF downloaded.", "success");
+  } catch (err) {
+    showToast("PDF export failed: " + err.message, "error");
+  }
+}
