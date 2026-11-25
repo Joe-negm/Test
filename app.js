@@ -188,9 +188,9 @@ async function switchWorkspaceView(viewId) {
       !(currentProfile.role === "owner" && viewId === "certificates"));
   }
   if (viewId !== "challenges" && typeof summaryPollTimer !== "undefined" && summaryPollTimer) {
-  clearInterval(summaryPollTimer);
-  summaryPollTimer = null;
-}
+    clearInterval(summaryPollTimer);
+    summaryPollTimer = null;
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -1275,6 +1275,7 @@ async function exportClassDashboardPDF() {
     showToast("PDF export failed: " + err.message, "error");
   }
 }
+
 // ============================================================================
 // 1v1 STUDENT CHALLENGES
 // ============================================================================
@@ -1285,6 +1286,10 @@ let cachedChallengeRow = null;
 let classmateCache = [];
 let summaryPollTimer = null;
 let activeChallengeId = null;
+
+// State signature tracking (prevents input re-render flicker during polling)
+let lastChallengeSignature = null;
+let hasAutoFocusedOwn = false;
 
 async function loadChallengesView() {
   await refreshChallengeSummary();
@@ -1465,8 +1470,13 @@ window.declineChallenge = async function (challengeId) {
   await refreshChallengeSummary();
 };
 
+// ----------------------------------------------------------------------------
+// Challenge room
+// ----------------------------------------------------------------------------
 window.openChallengeRoom = async function (challengeId) {
   activeChallengeId = challengeId;
+  lastChallengeSignature = null;   // force first render
+  hasAutoFocusedOwn = false;
   document.getElementById("challenge-room-modal").classList.remove("hidden");
   await refreshChallengeRoom();
   if (challengeRoomInterval) clearInterval(challengeRoomInterval);
@@ -1494,6 +1504,8 @@ window.closeChallengeRoom = async function () {
   }
   activeChallengeId = null;
   cachedChallengeRow = null;
+  lastChallengeSignature = null;
+  hasAutoFocusedOwn = false;
   await refreshChallengeSummary();
 };
 
@@ -1506,38 +1518,72 @@ async function refreshChallengeRoom() {
   if (error || !row) return;
   cachedChallengeRow = row;
 
-  // Fetch profiles
+  const isChallenger = row.challenger_id === myId;
+  const myQId  = isChallenger ? row.challenger_question_id : row.opponent_question_id;
+  const oppQId = isChallenger ? row.opponent_question_id   : row.challenger_question_id;
+  const myResult      = isChallenger ? row.challenger_result       : row.opponent_result;
+  const oppResult     = isChallenger ? row.opponent_result         : row.challenger_result;
+  const myStealResult = isChallenger ? row.challenger_steal_result : row.opponent_steal_result;
+  const myPoints      = isChallenger ? row.challenger_points       : row.opponent_points;
+  const oppPoints     = isChallenger ? row.opponent_points         : row.challenger_points;
+
+  // Signature of relevant state — skip re-render if nothing changed
+  const signature = JSON.stringify({
+    status: row.status,
+    myResult, oppResult, myStealResult,
+    myPoints, oppPoints,
+    winner: row.winner_id,
+    myQId, oppQId,
+  });
+  if (signature === lastChallengeSignature) return;  // ← THE KEY FIX
+  lastChallengeSignature = signature;
+
+  // Preserve any values the user is typing before we blow away the DOM
+  const prevOwnInputs  = Array.from(document.querySelectorAll('#challenge-my-question .challenge-answer-slot'));
+  const prevOwnValues  = prevOwnInputs.map(i => i.value);
+  const prevOwnFocusIdx = (() => {
+    const a = document.activeElement;
+    return a && a.classList.contains('challenge-answer-slot') ? parseInt(a.dataset.index) : -1;
+  })();
+  const prevStealInputs = Array.from(document.querySelectorAll('#challenge-steal-question .challenge-steal-answer-slot'));
+  const prevStealValues = prevStealInputs.map(i => i.value);
+  const prevStealFocusIdx = (() => {
+    const a = document.activeElement;
+    return a && a.classList.contains('challenge-steal-answer-slot') ? parseInt(a.dataset.index) : -1;
+  })();
+
+  // Fetch profiles + questions + slot counts in parallel
   const { data: profs } = await supabaseClient
     .from("profiles").select("id, full_name")
     .in("id", [row.challenger_id, row.opponent_id]);
   const profileMap = new Map((profs || []).map(p => [p.id, p]));
 
-  // Fetch questions
-  const qIds = [row.challenger_question_id, row.opponent_question_id].filter(Boolean);
+  const qIds = [myQId, oppQId].filter(Boolean);
   let qMap = new Map();
+  let slotMap = new Map();
   if (qIds.length) {
-    const { data: qs } = await supabaseClient
-      .from("questions").select("id, title, image_url, points").in("id", qIds);
-    (qs || []).forEach(q => qMap.set(q.id, q));
+    const [qsRes, slotRes] = await Promise.all([
+      supabaseClient.from("questions")
+        .select("id, title, image_url, points").in("id", qIds),
+      supabaseClient.rpc("get_slot_counts_for_questions", { p_question_ids: qIds }),
+    ]);
+    (qsRes.data || []).forEach(q => qMap.set(q.id, q));
+    (slotRes.data || []).forEach(r => slotMap.set(r.question_id, Number(r.slot_count) || 0));
   }
 
-  const isChallenger = row.challenger_id === myId;
-  const myQ = qMap.get(isChallenger ? row.challenger_question_id : row.opponent_question_id);
-  const oppQ = qMap.get(isChallenger ? row.opponent_question_id : row.challenger_question_id);
-  const myPoints = isChallenger ? row.challenger_points : row.opponent_points;
-  const oppPoints = isChallenger ? row.opponent_points : row.challenger_points;
-  const myResult = isChallenger ? row.challenger_result : row.opponent_result;
-  const oppResult = isChallenger ? row.opponent_result : row.challenger_result;
-  const myStealResult = isChallenger ? row.challenger_steal_result : row.opponent_steal_result;
+  const myQ  = qMap.get(myQId);
+  const oppQ = qMap.get(oppQId);
+  const mySlots  = slotMap.get(myQId)  ?? 0;
+  const oppSlots = slotMap.get(oppQId) ?? 0;
   const oppId = isChallenger ? row.opponent_id : row.challenger_id;
 
-  // Scoreboard
+  // --- Scoreboard ---
   document.getElementById("challenger-name").textContent = "You";
   document.getElementById("challenger-points").textContent = `${myPoints} pts`;
   document.getElementById("opponent-name").textContent = profileMap.get(oppId)?.full_name || "Opponent";
   document.getElementById("opponent-points").textContent = `${oppPoints} pts`;
 
-  // My question area
+  // --- My question area ---
   const qArea = document.getElementById("challenge-my-question");
   if (row.status !== "active") {
     qArea.innerHTML = `<p class="muted">Challenge not active.</p>`;
@@ -1548,46 +1594,88 @@ async function refreshChallengeRoom() {
     else badge = `<span class="badge badge-warning">⏱️ Timeout</span>`;
     qArea.innerHTML = `<p>${badge}</p>`;
   } else if (myQ) {
+    const slots = mySlots > 0 ? mySlots : 1;
+    let inputsHtml = "";
+    for (let i = 0; i < slots; i++) {
+      inputsHtml += `
+        <label class="answer-slot-label">Answer #${i + 1}</label>
+        <input type="text" class="answer-slot challenge-answer-slot" data-index="${i}"
+               placeholder="Answer ${i + 1}" required autocomplete="off" />`;
+    }
     qArea.innerHTML = `
       <div class="question-meta" style="margin-bottom:0.5rem;">
         <span class="stage-tag">${escapeHtml(myQ.title)}</span>
         <span class="points-tag">+${myQ.points} pts</span>
+        ${slots > 1 ? `<span class="stage-tag">${slots} answers</span>` : ""}
       </div>
       <img class="challenge-question-img" src="${escapeHtml(myQ.image_url)}"
            onclick="openImageZoom('${escapeHtml(myQ.image_url)}')" />
       <form class="challenge-answer-form" onsubmit="submitChallengeOwnAnswer(event)">
-        <input type="text" id="challenge-own-answer" placeholder="Your answer..." required autocomplete="off" />
-        <button type="submit">Submit</button>
+        <div style="display:flex;flex-direction:column;gap:0.5rem;width:100%;">
+          ${inputsHtml}
+          <button type="submit">Submit</button>
+        </div>
       </form>`;
-    setTimeout(() => document.getElementById("challenge-own-answer")?.focus(), 100);
+
+    // Restore previous input values + focus (only if re-rendering mid-typing)
+    const newInputs = qArea.querySelectorAll(".challenge-answer-slot");
+    newInputs.forEach((inp, i) => {
+      if (prevOwnValues[i] !== undefined) inp.value = prevOwnValues[i];
+    });
+    if (prevOwnFocusIdx >= 0 && newInputs[prevOwnFocusIdx]) {
+      newInputs[prevOwnFocusIdx].focus();
+    } else if (!hasAutoFocusedOwn && newInputs[0]) {
+      setTimeout(() => newInputs[0]?.focus(), 80);
+      hasAutoFocusedOwn = true;
+    }
   } else {
     qArea.innerHTML = `<p class="muted">No question assigned.</p>`;
   }
 
-  // Steal area
+  // --- Steal area ---
   const stealArea = document.getElementById("challenge-steal-area");
   const stealQArea = document.getElementById("challenge-steal-question");
-  const canSteal = oppResult && oppResult !== "correct" && !myStealResult && row.status === "active" && myResult;
+  const canSteal = oppResult && oppResult !== "correct" && !myStealResult
+                   && row.status === "active" && myResult;
   if (canSteal && oppQ) {
     stealArea.classList.remove("hidden");
     document.getElementById("challenge-steal-desc").textContent =
       `${profileMap.get(oppId)?.full_name || "Opponent"} missed their question. Solve it to steal +${oppQ.points} points!`;
+    const slots = oppSlots > 0 ? oppSlots : 1;
+    let inputsHtml = "";
+    for (let i = 0; i < slots; i++) {
+      inputsHtml += `
+        <label class="answer-slot-label">Answer #${i + 1}</label>
+        <input type="text" class="answer-slot challenge-steal-answer-slot" data-index="${i}"
+               placeholder="Answer ${i + 1}" required autocomplete="off" />`;
+    }
     stealQArea.innerHTML = `
       <div class="question-meta" style="margin-bottom:0.5rem;">
         <span class="stage-tag">${escapeHtml(oppQ.title)}</span>
         <span class="points-tag">+${oppQ.points} pts</span>
+        ${slots > 1 ? `<span class="stage-tag">${slots} answers</span>` : ""}
       </div>
       <img class="challenge-question-img" src="${escapeHtml(oppQ.image_url)}"
            onclick="openImageZoom('${escapeHtml(oppQ.image_url)}')" />
       <form class="challenge-answer-form" onsubmit="submitChallengeStealAnswer(event)">
-        <input type="text" id="challenge-steal-answer" placeholder="Steal answer..." required autocomplete="off" />
-        <button type="submit">⚡ Steal</button>
+        <div style="display:flex;flex-direction:column;gap:0.5rem;width:100%;">
+          ${inputsHtml}
+          <button type="submit">⚡ Steal</button>
+        </div>
       </form>`;
+
+    const newInputs = stealQArea.querySelectorAll(".challenge-steal-answer-slot");
+    newInputs.forEach((inp, i) => {
+      if (prevStealValues[i] !== undefined) inp.value = prevStealValues[i];
+    });
+    if (prevStealFocusIdx >= 0 && newInputs[prevStealFocusIdx]) {
+      newInputs[prevStealFocusIdx].focus();
+    }
   } else {
     stealArea.classList.add("hidden");
   }
 
-  // Result banner
+  // --- Result banner ---
   const resultBanner = document.getElementById("challenge-result-banner");
   if (row.status === "completed") {
     resultBanner.classList.remove("hidden", "win", "loss", "draw");
@@ -1605,7 +1693,7 @@ async function refreshChallengeRoom() {
     resultBanner.classList.add("hidden");
   }
 
-  // Auto-finalize
+  // --- Auto-finalize ---
   if (row.status === "active") {
     const bothOwnDone = row.challenger_result && row.opponent_result;
     const chDone = row.challenger_result === "correct" || row.challenger_steal_result;
@@ -1619,7 +1707,7 @@ async function refreshChallengeRoom() {
 function tickChallengeTimer() {
   if (!cachedChallengeRow || cachedChallengeRow.status !== "active") return;
   const startedMs = new Date(cachedChallengeRow.round_started_at).getTime();
-  const durationMs = (cachedChallengeRow.round_duration_sec || 60) * 1000;
+  const durationMs = (cachedChallengeRow.round_duration_sec || 120) * 1000;
   const remaining = Math.max(0, durationMs - (Date.now() - startedMs));
 
   const el = document.getElementById("challenge-timer-display");
@@ -1631,7 +1719,6 @@ function tickChallengeTimer() {
   el.textContent = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${tenths}`;
   el.classList.toggle("urgent", remaining <= 10000 && remaining > 0);
 
-  // Mark timeouts (own side; also opponent if we're 65s in and they haven't answered)
   const myId = currentProfile.id;
   const isMeChallenger = cachedChallengeRow.challenger_id === myId;
 
@@ -1646,8 +1733,7 @@ function tickChallengeTimer() {
         p_challenge_id: activeChallengeId, p_side: mySide,
       }).then(() => refreshChallengeRoom());
     }
-    // Grace period: after 65s mark opponent timeout too (so finalization can proceed even if they left)
-    if (Date.now() - startedMs >= 65000 && !oppResult) {
+    if (Date.now() - startedMs >= 125000 && !oppResult) {
       supabaseClient.rpc("timeout_challenge_side", {
         p_challenge_id: activeChallengeId, p_side: oppSide,
       }).then(() => refreshChallengeRoom());
@@ -1657,10 +1743,12 @@ function tickChallengeTimer() {
 
 window.submitChallengeOwnAnswer = async function (e) {
   e.preventDefault();
-  const answer = document.getElementById("challenge-own-answer").value.trim();
-  if (!answer) return;
+  const inputs = Array.from(document.querySelectorAll("#challenge-my-question .challenge-answer-slot"));
+  const answers = inputs.map(i => i.value.trim());
+  if (answers.some(a => !a)) return showToast("Fill in every answer box.", "error");
+  const payload = JSON.stringify(answers);
   const { data, error } = await supabaseClient.rpc("submit_challenge_own_answer", {
-    p_challenge_id: activeChallengeId, p_answer: answer,
+    p_challenge_id: activeChallengeId, p_answer: payload,
   });
   if (error) return showToast(error.message, "error");
   if (data.is_correct) {
@@ -1671,15 +1759,18 @@ window.submitChallengeOwnAnswer = async function (e) {
   } else {
     showToast("❌ Wrong — your opponent may steal.", "error");
   }
+  lastChallengeSignature = null;  // force re-render so the input is replaced by the result badge
   await refreshChallengeRoom();
 };
 
 window.submitChallengeStealAnswer = async function (e) {
   e.preventDefault();
-  const answer = document.getElementById("challenge-steal-answer").value.trim();
-  if (!answer) return;
+  const inputs = Array.from(document.querySelectorAll("#challenge-steal-question .challenge-steal-answer-slot"));
+  const answers = inputs.map(i => i.value.trim());
+  if (answers.some(a => !a)) return showToast("Fill in every steal answer box.", "error");
+  const payload = JSON.stringify(answers);
   const { data, error } = await supabaseClient.rpc("submit_challenge_steal_answer", {
-    p_challenge_id: activeChallengeId, p_answer: answer,
+    p_challenge_id: activeChallengeId, p_answer: payload,
   });
   if (error) return showToast(error.message, "error");
   if (data.is_correct) {
@@ -1689,5 +1780,6 @@ window.submitChallengeStealAnswer = async function (e) {
   } else {
     showToast("❌ Steal failed.", "error");
   }
+  lastChallengeSignature = null;
   await refreshChallengeRoom();
 };
