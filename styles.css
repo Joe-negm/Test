@@ -716,6 +716,244 @@ h1, h2, h3, h4, .logo-title { font-family: 'Outfit', sans-serif; color: var(--na
   .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .data-table { min-width: 600px; }
 }
+/* ============================================================================
+   AVATARS (profile pictures)
+   ============================================================================ */
+.avatar {
+  display: inline-grid;
+  place-items: center;
+  position: relative;
+  border-radius: 50%;
+  flex-shrink: 0;
+  vertical-align: middle;
+  overflow: visible;
+}
+.avatar > img,
+.avatar > .avatar-initials {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 6px rgba(15, 41, 66, 0.15);
+  object-fit: cover;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.avatar > .avatar-initials {
+  background: linear-gradient(135deg, #1d4ed8, #0f2942);
+  color: #fff;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 800;
+}
+
+/* Header avatar */
+#user-pill { transition: background 0.15s ease; }
+#user-pill:hover { background: rgba(255, 255, 255, 0.18); }
+
+/* Table user cell */
+.table-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.table-user > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Inbox contact row */
+.inbox-contact {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  margin-bottom: 4px;
+  font-weight: 700;
+  color: var(--navy);
+  font-family: inherit;
+  font-size: 0.9rem;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.inbox-contact:hover { background: var(--blue-soft); }
+.inbox-contact.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+.inbox-contact.unread { border-color: #fbbf24; background: #fffbeb; }
+
+/* Avatar upload area */
+.avatar-upload-area {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px 0;
+}
+#avatar-preview-large .avatar {
+  box-shadow: 0 4px 18px rgba(15, 41, 66, 0.18);
+}
+
+/* Challenge room avatars */
+.challenge-side-avatar {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 4px;
+}
+
+/* ============================================================================
+   ONLINE / OFFLINE DOTS
+   ============================================================================ */
+.online-dot, .offline-dot {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  pointer-events: none;
+  box-sizing: content-box;
+}
+.online-dot {
+  background: #22c55e;
+  box-shadow: 0 0 0 1px #16a34a;
+}
+.offline-dot { background: #cbd5e1; }
+.classmate-card.online { border-color: #86efac; box-shadow: 0 0 0 2px rgba(34,197,94,.1); }
+.online-label { color: #16a34a; font-size: 0.72rem; font-weight: 700; }
+
+/* Mini tags */
+.mini-tag {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 0.68rem;
+  background: var(--blue-soft);
+  color: var(--blue);
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-weight: 700;
+}
+.mini-tag.muted-tag { background: #f1f5f9; color: var(--muted); }
+
+/* Classmate card avatar alignment */
+.classmate-card {
+  align-items: center;
+}
+
+/* ============================================================================
+   RESPONSIVE VIEWPORT ADAPTATION
+   ============================================================================ */
+
+/* Tablet & below */
+@media (max-width: 1024px) {
+  .auth-wrapper { grid-template-columns: 1fr; padding: 1.5rem 1rem; min-height: auto; }
+  .auth-hero { padding: 2rem; }
+  .auth-hero h1 { font-size: 2rem; }
+  .grid-2-col, .grid-teacher { grid-template-columns: 1fr; }
+  .workspace { padding: 1.25rem 1rem 2rem; }
+  .top-header { padding: 0.75rem 1rem; }
+  .main-nav {
+    width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .main-nav::-webkit-scrollbar { height: 4px; }
+  .nav-btn { white-space: nowrap; flex-shrink: 0; }
+}
+
+/* Phone */
+@media (max-width: 720px) {
+  body { font-size: 15px; }
+  .auth-wrapper { padding: 1rem 0.75rem; }
+  .auth-hero { padding: 1.5rem; }
+  .auth-hero h1 { font-size: 1.7rem; }
+  .auth-hero p { font-size: 0.95rem; }
+  .auth-card { padding: 1.25rem; }
+  .auth-tabs { grid-template-columns: 1fr; }
+  .auth-tab { text-align: left; padding: 0.65rem 0.9rem; }
+
+  .top-header { gap: 0.5rem; flex-wrap: wrap; }
+  .header-left { flex: 1 1 100%; }
+  .header-right {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .user-pill { flex: 1; min-width: 0; }
+  .user-meta strong, .user-meta small {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .logo-title { font-size: 1rem; }
+  .logo-sub { font-size: 0.7rem; }
+
+  .workspace { padding: 1rem 0.75rem 2rem; }
+  .card { padding: 1rem; }
+  .card-toolbar { flex-direction: column; align-items: stretch; }
+  .select-inline, .search-input { width: 100%; min-width: 0; }
+
+  .stats-row { grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+  .stat-value { font-size: 1.5rem; }
+  .form-row { flex-direction: column; gap: 0; }
+  .panel-header { flex-direction: column; align-items: flex-start; }
+
+  .questions-grid, .student-questions-grid { grid-template-columns: 1fr; }
+  .topics-grid { grid-template-columns: 1fr 1fr; }
+  .question-img-box { height: 180px; }
+  .classmates-grid { grid-template-columns: 1fr; }
+
+  .student-welcome { flex-direction: column; align-items: flex-start; }
+  .student-quick-stats { width: 100%; flex-wrap: wrap; }
+  .quick-pill { flex: 1; text-align: center; }
+
+  /* Modals */
+  .modal-content {
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px) !important;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+    padding: 1.25rem;
+  }
+  .modal-image-box { padding: 0.5rem; }
+  .modal-image-box img { max-width: 100%; height: auto; }
+
+  /* Challenge room */
+  .challenge-vs-bar { flex-direction: column; gap: 0.5rem; }
+  .challenge-vs-text { margin: 0; font-size: 1rem; }
+  .challenge-side { text-align: center; }
+  .challenge-timer-bar { flex-direction: column; align-items: flex-start; gap: 0.25rem; }
+  .challenge-timer-value { font-size: 1.5rem; }
+  .challenge-question-img { max-height: 220px; }
+
+  /* Inbox */
+  #inbox-thread { max-height: 45vh; }
+  #inbox-send-form { flex-wrap: wrap; }
+  #inbox-send-form input { min-width: 0; }
+
+  /* Table user cell */
+  .table-user { gap: 6px; }
+}
+
+/* Small phone */
+@media (max-width: 480px) {
+  .topics-grid { grid-template-columns: 1fr; }
+  .stats-row { grid-template-columns: 1fr; }
+  .auth-hero h1 { font-size: 1.5rem; }
+  .logo-mark { width: 36px; height: 36px; font-size: 1.2rem; }
+  .badge, .score-pill { font-size: 0.68rem; padding: 0.18rem 0.45rem; }
+  .nav-btn { font-size: 0.8rem; padding: 0.45rem 0.7rem; }
+  .question-img-box { height: 150px; }
+  .btn { padding: 0.6rem 1rem; font-size: 0.9rem; }
+  .btn-sm { padding: 0.4rem 0.7rem; font-size: 0.8rem; }
+}
+
+/* Tables scroll horizontally on small screens */
+@media (max-width: 900px) {
+  .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .data-table { min-width: 600px; }
+}
 @media (max-width: 900px) {
   .auth-wrapper, .grid-2-col, .grid-teacher { grid-template-columns: 1fr; }
   .form-row { flex-direction: column; gap: 0; }
